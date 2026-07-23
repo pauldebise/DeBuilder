@@ -160,6 +160,15 @@ def _update_state_files(
 ) -> None:
     if result.stdout.strip():
         update_progress(target_dir, result.stdout.strip())
+    elif result.returncode != 0:
+        error_msg = result.stderr.strip() or f"OpenCode a echoue (code {result.returncode})"
+        update_progress(
+            target_dir,
+            f"- **Action realisee** : Tentative d'iteration\n"
+            f"- **Resultat** : ECHEC\n"
+            f"- **Problemes rencontres** : {error_msg[:500]}\n"
+            f"- **Solutions envisagees** : Verifier la cle API et la configuration.\n",
+        )
 
     if suggestions_md.strip():
         clear_suggestions(target_dir)

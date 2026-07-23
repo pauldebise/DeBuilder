@@ -139,6 +139,36 @@ def _start_session(
                 return "**Erreur :** Echec de l'initialisation Git.", ""
             msg = f"Nouveau projet initialise dans `{target_dir}`.\n\n"
 
+        provider_cfg = PROVIDERS.get(provider, PROVIDERS["Autre (custom)"])
+        secrets = {}
+        base_url = provider_cfg["base_url"]
+        actual_model = model or provider_cfg["default_model"]
+
+        if api_key.strip():
+            for key_name in provider_cfg["env_keys"]:
+                secrets[key_name] = api_key.strip()
+            if base_url:
+                secrets["OPENAI_BASE_URL"] = base_url
+
+        if not api_key.strip():
+            return (
+                "**Erreur :** Aucune cle API fournie.\n\n"
+                "Renseignez une cle API valide pour le fournisseur **{}**.".format(provider),
+                "",
+            )
+
+        inject_secrets(secrets)
+
+        msg = "Verification de la cle API...\n\n"
+
+        error = _validate_opencode(actual_model)
+        if error:
+            return f"**Erreur OpenCode :**\n```\n{error}\n```\n\nVerifiez votre cle API et le modele `{actual_model}`.", ""
+
+        msg += "Cle API validee.\n"
+        msg += f"Fournisseur : **{provider}**\n"
+        msg += f"Modele : `{actual_model}`\n\n"
+
         hw = audit_hardware()
         hw_text = format_for_agent(hw)
 
@@ -148,24 +178,6 @@ def _start_session(
             hardware_info=hw_text,
         )
         msg += "Fichiers d'etat crees.\n\n"
-
-        provider_cfg = PROVIDERS.get(provider, PROVIDERS["Autre (custom)"])
-        secrets = {}
-        base_url = provider_cfg["base_url"]
-
-        if api_key.strip():
-            for key_name in provider_cfg["env_keys"]:
-                secrets[key_name] = api_key.strip()
-            if base_url:
-                secrets["OPENAI_BASE_URL"] = base_url
-
-        if secrets:
-            inject_secrets(secrets)
-            msg += f"Cles injectees pour **{provider}**.\n"
-            msg += f"Modele : `{model or provider_cfg['default_model']}`\n\n"
-        else:
-            msg += "**Attention :** Aucune cle API fournie. OpenCode risque de ne pas fonctionner.\n\n"
-
         msg += "### Materiel detecte\n\n" + hw_text + "\n\n"
 
         agent_script = (
@@ -179,7 +191,7 @@ def _start_session(
                 **os.environ,
                 "DEBUILDER_TARGET_DIR": str(target_dir),
                 "DEBUILDER_PYTHON": python_bin,
-                "DEBUILDER_MODEL": model or provider_cfg["default_model"],
+                "DEBUILDER_MODEL": actual_model,
             },
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -191,3 +203,38 @@ def _start_session(
 
     except Exception as e:
         return f"**Erreur :** {e}", ""
+
+
+def _validate_opencode(model: str) -> str:
+    """Valide que opencode fonctionne avec la cle API.
+
+    Args:
+        model: Nom du modele a tester.
+
+    Returns:
+        Message d'erreur, ou chaine vide si OK.
+    """
+    cmd = ["opencode"]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.extend(["--prompt", "reply with just the word ok"])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip() if result.stderr else ""
+            stdout = result.stdout.strip() if result.stdout else ""
+            return stderr or stdout or f"Erreur inconnue (code {result.returncode})"
+        return ""
+    except subprocess.TimeoutExpired:
+        return ""
+    except FileNotFoundError:
+        return "Commande `opencode` introuvable."
+    except Exception as e:
+        return str(e)
