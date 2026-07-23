@@ -7,6 +7,7 @@ L'agent n'a aucune memoire interne entre deux iterations:
 il reconstruit son contexte depuis les fichiers d'etat.
 """
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -49,6 +50,9 @@ def run_iteration(target_dir: Path) -> bool:
     _log(f"[agent] Lancement d'OpenCode...")
     result = _run_opencode(target_dir, prompt)
     _log(f"[agent] OpenCode termine (code={result.returncode})")
+
+    if result.returncode != 0 and result.stderr:
+        _log(f"[agent] Erreur OpenCode: {result.stderr[:500]}")
 
     barrier_files = sorted(target_dir.glob("BARRIER_*"))
     if barrier_files:
@@ -125,8 +129,14 @@ def _build_prompt(
 
 
 def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
+    model = os.environ.get("DEBUILDER_MODEL", "")
+    cmd = ["opencode"]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.extend(["--prompt", prompt])
+
     return subprocess.run(
-        ["opencode", "--prompt", prompt],
+        cmd,
         cwd=str(target_dir),
         capture_output=True,
         text=True,
