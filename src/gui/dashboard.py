@@ -6,30 +6,73 @@ Affichage en temps reel (polling) de:
 - Les alertes watchdog
 """
 
-import gradio as gr
-
 from pathlib import Path
 
+import gradio as gr
 
-def build_dashboard_tab(target_dir: Path) -> gr.TabItem:
-    """Construit l'onglet tableau de bord.
-
-    Args:
-        target_dir: Repertoire du projet cible.
-
-    Returns:
-        Le composant gr.TabItem configure.
-    """
-    ...
+from src.core.state import read_state
+from src.utils.markdown_parser import parse_progress, parse_benchmarks, parse_alerts
 
 
-def refresh_dashboard(target_dir: Path) -> tuple[str, str, str]:
-    """Rafraichit les donnees du tableau de bord par polling.
+def build_dashboard_tab(target_dir_state: gr.State) -> gr.TabItem:
+    """Construit l'onglet tableau de bord."""
+    with gr.TabItem("Tableau de Bord") as tab:
+        gr.Markdown("## Tableau de Bord")
 
-    Args:
-        target_dir: Repertoire du projet cible.
+        progress_display = gr.Markdown(
+            value="*Aucune session active.*",
+        )
+        benchmarks_display = gr.Dataframe(
+            headers=["Parametre", "Valeur"],
+            interactive=False,
+        )
+        alerts_display = gr.Markdown(value="*Aucune alerte.*")
 
-    Returns:
-        Tuple (progression, benchmarks, alertes) pour mise a jour GUI.
-    """
-    ...
+        refresh_btn = gr.Button("Rafraichir", variant="secondary")
+
+        def _refresh(target_dir_str):
+            return _get_dashboard_data(target_dir_str)
+
+        refresh_btn.click(
+            fn=_refresh,
+            inputs=[target_dir_state],
+            outputs=[progress_display, benchmarks_display, alerts_display],
+        )
+
+    return tab
+
+
+def _get_dashboard_data(target_dir_str: str) -> tuple[str, list, str]:
+    if not target_dir_str:
+        return "*Aucune session active.*", [], "*Aucune alerte.*"
+
+    target_dir = Path(target_dir_str)
+
+    progress_md = read_state(target_dir, "PROGRESS.md")
+    benches_md = read_state(target_dir, "BENCHMARKS.md")
+
+    progress_data = parse_progress(progress_md)
+    latest = progress_data.get("latest_iteration", "*En attente...*")
+    next_task = progress_data.get("next_task", "")
+    prev_iterations = progress_data.get("previous_iterations", [])
+
+    progress_text = f"### Derniere iteration\n\n{latest}\n\n"
+    if prev_iterations:
+        progress_text += "### Iterations precedentes\n\n"
+        for pi in prev_iterations:
+            progress_text += f"{pi}\n\n"
+    if next_task:
+        progress_text += f"### Prochaine tache\n\n{next_task}\n"
+
+    benchmarks = parse_benchmarks(benches_md)
+
+    alerts_list = parse_alerts(progress_md)
+    alerts_text = "\n".join(
+        f"- **{a['keyword']}** : {a['line']}" for a in alerts_list
+    ) if alerts_list else "*Aucune alerte detectee.*"
+
+    return (
+        progress_text or "*En attente de la premiere iteration...*",
+        benchmarks,
+        alerts_text,
+    )

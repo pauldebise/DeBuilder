@@ -7,69 +7,122 @@ Permet a l'utilisateur de:
 - Configurer des barrieres (Human-in-the-Loop)
 """
 
-import gradio as gr
-
 from pathlib import Path
 
+import gradio as gr
 
-def build_control_tab(target_dir: Path) -> gr.TabItem:
-    """Construit l'onglet centre de controle.
-
-    Args:
-        target_dir: Repertoire du projet cible.
-
-    Returns:
-        Le composant gr.TabItem configure.
-    """
-    ...
+from src.core.state import append_state, touch_done
+from src.core.git import rollback_last
 
 
-def send_suggestion(target_dir: Path, message: str) -> str:
-    """Ecrit un message de guidage humain dans SUGGESTIONS.md.
+def build_control_tab(target_dir_state: gr.State) -> gr.TabItem:
+    """Construit l'onglet centre de controle."""
+    with gr.TabItem("Centre de Controle") as tab:
+        gr.Markdown("## Centre de Controle")
 
-    Args:
-        target_dir: Repertoire du projet cible.
-        message: Message de l'utilisateur.
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown("### Boite aux lettres (Suggestions)")
+                suggestion_input = gr.Textbox(
+                    label="Votre message",
+                    placeholder="Suggestion, directive ou observation...",
+                    lines=4,
+                )
+                send_btn = gr.Button("Envoyer", variant="secondary")
+                suggestion_status = gr.Markdown("")
 
-    Returns:
-        Message de confirmation.
-    """
-    ...
+            with gr.Column():
+                gr.Markdown("### Actions")
+                kill_btn = gr.Button("Arret d'urgence (Kill-Switch)", variant="stop")
+                kill_status = gr.Markdown("")
+
+                rollback_btn = gr.Button("Rollback (HEAD~1)", variant="secondary")
+                rollback_status = gr.Markdown("")
+
+        gr.Markdown("---")
+        gr.Markdown("### Barrieres (Human-in-the-Loop)")
+
+        with gr.Row():
+            barrier_type = gr.Dropdown(
+                label="Type d'operation",
+                choices=["entrainement", "deploiement", "modification_critique"],
+                value="entrainement",
+            )
+            with gr.Column(scale=1):
+                enable_barrier_btn = gr.Button("Activer", variant="secondary")
+                disable_barrier_btn = gr.Button("Desactiver", variant="secondary")
+            barrier_status = gr.Markdown("")
+
+        send_btn.click(
+            fn=_send_suggestion,
+            inputs=[target_dir_state, suggestion_input],
+            outputs=[suggestion_status],
+        )
+
+        kill_btn.click(
+            fn=_activate_kill_switch,
+            inputs=[target_dir_state],
+            outputs=[kill_status],
+        )
+
+        rollback_btn.click(
+            fn=_do_rollback,
+            inputs=[target_dir_state],
+            outputs=[rollback_status],
+        )
+
+        enable_barrier_btn.click(
+            fn=lambda td, bt: _set_barrier(td, bt, True),
+            inputs=[target_dir_state, barrier_type],
+            outputs=[barrier_status],
+        )
+
+        disable_barrier_btn.click(
+            fn=lambda td, bt: _set_barrier(td, bt, False),
+            inputs=[target_dir_state, barrier_type],
+            outputs=[barrier_status],
+        )
+
+    return tab
 
 
-def trigger_kill_switch(target_dir: Path) -> str:
-    """Cree le fichier temoin DONE pour arreter l'agent.
-
-    Args:
-        target_dir: Repertoire du projet cible.
-
-    Returns:
-        Message de confirmation.
-    """
-    ...
+def _send_suggestion(target_dir_str: str, message: str) -> str:
+    if not target_dir_str:
+        return "**Erreur :** Aucune session active."
+    if not message.strip():
+        return "**Erreur :** Message vide."
+    target_dir = Path(target_dir_str)
+    append_state(target_dir, "SUGGESTIONS.md", f"> {message.strip()}\n\n")
+    return "Suggestion envoyee. L'agent la lira a la prochaine iteration."
 
 
-def perform_rollback(target_dir: Path) -> str:
-    """Execute un git reset --hard HEAD~1 sur le depot cible.
-
-    Args:
-        target_dir: Repertoire du projet cible.
-
-    Returns:
-        Message de confirmation ou d'erreur.
-    """
-    ...
+def _activate_kill_switch(target_dir_str: str) -> str:
+    if not target_dir_str:
+        return "**Erreur :** Aucune session active."
+    target_dir = Path(target_dir_str)
+    touch_done(target_dir)
+    return "**Kill-switch active.** L'agent s'arretera a la fin de l'iteration en cours."
 
 
-def set_barrier(target_dir: Path, op_type: str, enabled: bool) -> str:
-    """Configure une barriere Human-in-the-Loop.
+def _do_rollback(target_dir_str: str) -> str:
+    if not target_dir_str:
+        return "**Erreur :** Aucune session active."
+    target_dir = Path(target_dir_str)
+    success = rollback_last(target_dir)
+    if success:
+        return "**Rollback effectue.** Le dernier commit a ete annule (HEAD~1)."
+    return "**Erreur :** Le rollback a echoue."
 
-    Args:
-        target_dir: Repertoire du projet cible.
-        op_type: Type d'operation necessitant validation.
-        enabled: Activer ou desactiver la barriere.
 
-    Returns:
-        Message de confirmation.
-    """
-    ...
+def _set_barrier(target_dir_str: str, barrier_type: str, enabled: bool) -> str:
+    if not target_dir_str:
+        return "**Erreur :** Aucune session active."
+    target_dir = Path(target_dir_str)
+    barrier_file = target_dir / f"BARRIER_{barrier_type.upper()}"
+    if enabled:
+        barrier_file.touch(exist_ok=True)
+        return f"Barriere activee pour `{barrier_type}`."
+    else:
+        if barrier_file.exists():
+            barrier_file.unlink()
+        return f"Barriere desactivee pour `{barrier_type}`."

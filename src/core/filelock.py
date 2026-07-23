@@ -8,6 +8,7 @@ par fichier d'etat.
 import contextlib
 import fcntl
 import os
+import time
 from pathlib import Path
 
 
@@ -22,7 +23,21 @@ def file_lock(filepath: Path):
     Args:
         filepath: Chemin du fichier a verrouiller.
     """
-    ...
+    lock_path = Path(str(filepath) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = acquire_lock(lock_path)
+    try:
+        yield
+    finally:
+        release_lock(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
 
 
 def acquire_lock(lock_path: Path, timeout: float = 5.0) -> int:
@@ -38,7 +53,20 @@ def acquire_lock(lock_path: Path, timeout: float = 5.0) -> int:
     Raises:
         TimeoutError: Si le verrou n'a pas pu etre acquis.
     """
-    ...
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT | os.O_TRUNC)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise TimeoutError(
+                    f"Impossible d'acquerir le verrou dans le delai de {timeout}s"
+                )
+            time.sleep(0.05)
 
 
 def release_lock(fd: int) -> None:
@@ -47,4 +75,7 @@ def release_lock(fd: int) -> None:
     Args:
         fd: Descripteur de fichier du verrou.
     """
-    ...
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass

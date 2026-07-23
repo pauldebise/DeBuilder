@@ -1,24 +1,48 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AGENT_LOOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEBUILDER_DIR="$(dirname "$(dirname "${AGENT_LOOP_DIR}")")"
+DEBUILDER_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
+TARGET_DIR="${DEBUILDER_TARGET_DIR:-}"
 
-echo "[agent_loop] DeBuilder Agent Loop started" >&2
-echo "[agent_loop] DeBuilder root: ${DEBUILDER_DIR}" >&2
+if [ -z "${TARGET_DIR}" ]; then
+    echo "[agent_loop] ERREUR: DEBUILDER_TARGET_DIR non definie." >&2
+    echo "[agent_loop] Definir la variable d'environnement et relancer." >&2
+    exit 1
+fi
 
-# Boucle principale
+if [ ! -d "${TARGET_DIR}" ]; then
+    echo "[agent_loop] ERREUR: Le repertoire cible ${TARGET_DIR} n'existe pas." >&2
+    exit 1
+fi
+
+echo "[agent_loop] Demarrage de la boucle agent" >&2
+echo "[agent_loop] DeBuilder : ${DEBUILDER_DIR}" >&2
+echo "[agent_loop] Cible     : ${TARGET_DIR}" >&2
+
+export DEBUILDER_DIR
+export DEBUILDER_TARGET_DIR="${TARGET_DIR}"
+
+ITERATION=0
 while true; do
-    echo "[agent_loop] Starting iteration..." >&2
+    ITERATION=$((ITERATION + 1))
+    echo "[agent_loop] ========================================" >&2
+    echo "[agent_loop] Iteration #${ITERATION} - $(date)" >&2
 
-    # TODO: Implementer l'iteration OpenCode:
-    # 1. Lire AGENTS.md, PROGRESS.md, SUGGESTIONS.md, RESOURCES_NEEDED.md
-    # 2. Verrouiller les fichiers d'etat
-    # 3. Executer OpenCode avec le prompt construit
-    # 4. Mettre a jour PROGRESS.md, BENCHMARKS.md
-    # 5. Commit et push sur le depot cible
-    # 6. Verifier DONE -> sortie propre
+    cd "${DEBUILDER_DIR}"
+    if ! python3 -c "
+import sys
+sys.path.insert(0, '${DEBUILDER_DIR}')
+from src.loop.agent import run_iteration
+from pathlib import Path
+cont = run_iteration(Path('${TARGET_DIR}'))
+sys.exit(0 if cont else 1)
+"; then
+        echo "[agent_loop] Arret demande (fichier DONE ou erreur)." >&2
+        break
+    fi
 
-    # Simulation temporaire
-    sleep 10
+    echo "[agent_loop] Iteration #${ITERATION} terminee." >&2
+    sleep 2
 done
+
+echo "[agent_loop] Boucle terminee (${ITERATION} iterations)." >&2

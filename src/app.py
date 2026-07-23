@@ -10,8 +10,6 @@ Lance l'application Gradio sur le port 7680 avec les onglets:
 
 import gradio as gr
 
-from pathlib import Path
-
 from src.gui.config import build_config_tab
 from src.gui.dashboard import build_dashboard_tab
 from src.gui.control import build_control_tab
@@ -22,21 +20,40 @@ PORT = 7680
 TITLE = "DeBuilder - Orchestrateur OpenCode"
 
 
-def build_interface(target_dir: Path | None = None) -> gr.Blocks:
+def build_interface() -> gr.Blocks:
     """Construit l'interface Gradio complete.
-
-    Args:
-        target_dir: Repertoire du projet cible (None = pas encore initialise).
 
     Returns:
         L'application Gradio configuree.
     """
-    ...
+    with gr.Blocks(title=TITLE) as app:
+        gr.Markdown("# DeBuilder - Orchestrateur OpenCode")
+        gr.Markdown(
+            "Agent IA autonome pour le developpement et le machine learning. "
+            "Configuration, supervision et controle asynchrone."
+        )
+
+        target_dir_state = gr.State("")
+
+        with gr.Tabs():
+            config = build_config_tab(target_dir_state)
+            dashboard = build_dashboard_tab(target_dir_state)
+            control = build_control_tab(target_dir_state)
+            agents = build_agents_tab(target_dir_state)
+            logs = build_logs_tab(target_dir_state)
+
+    return app
 
 
 def main():
     """Fonction principale. Lance le serveur Gradio."""
-    ...
+    app = build_interface()
+    app.queue()
+    app.launch(
+        server_port=PORT,
+        server_name="0.0.0.0",
+        share=False,
+    )
 
 
 if __name__ == "__main__":
