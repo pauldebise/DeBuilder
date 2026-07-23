@@ -32,6 +32,29 @@ if ! ${PYTHON_BIN} -c "import gradio" 2>/dev/null; then
         ${PYTHON_BIN} -m pip install gradio
 fi
 
+if ! command -v opencode &>/dev/null; then
+    echo "[DeBuilder] OpenCode non trouve. Installation..." >&2
+    if command -v npm &>/dev/null; then
+        npm install -g opencode 2>&1 || true
+    elif command -v node &>/dev/null; then
+        npm install -g opencode 2>&1 || true
+    else
+        echo "[DeBuilder] Installation de Node.js..." >&2
+        if command -v apt-get &>/dev/null; then
+            apt-get update -qq && apt-get install -y -qq nodejs npm 2>&1 || true
+        elif command -v apk &>/dev/null; then
+            apk add --no-cache nodejs npm 2>&1 || true
+        fi
+        npm install -g opencode 2>&1 || true
+    fi
+    if command -v opencode &>/dev/null; then
+        echo "[DeBuilder] OpenCode installe avec succes." >&2
+    else
+        echo "[DeBuilder] ATTENTION: OpenCode n'a pas pu etre installe automatiquement." >&2
+        echo "[DeBuilder] Installez-le manuellement: npm install -g opencode" >&2
+    fi
+fi
+
 if tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
     echo "[DeBuilder] La session '${SESSION_NAME}' tourne deja." >&2
     echo "[DeBuilder] Pour attacher: tmux attach-session -t ${SESSION_NAME}" >&2
