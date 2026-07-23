@@ -344,10 +344,9 @@ def _validate_opencode(model: str) -> str:
     if not bin_path:
         return "Commande `opencode` introuvable."
 
-    cmd = [bin_path, "--auto"]
+    cmd = [bin_path, "run", "reply with just the word ok"]
     if model:
         cmd.extend(["--model", model])
-    cmd.extend(["--prompt", "reply with just the word ok"])
 
     try:
         result = subprocess.run(

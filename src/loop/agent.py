@@ -133,15 +133,11 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
 
     model = os.environ.get("DEBUILDER_MODEL", "")
     bin_path = shutil.which("opencode") or "/usr/local/bin/opencode"
-    cmd = [
-        bin_path,
-        "--auto",
-    ]
+    cmd = [bin_path, "run", prompt]
     if model:
         cmd.extend(["--model", model])
-    cmd.extend(["--prompt", prompt])
 
-    _log(f"[agent] Commande: opencode --auto --model {model or '(default)'} --prompt [...]")
+    _log(f"[agent] opencode run --model {model or '(default)'} [...]")
 
     log_file = target_dir / "OPENCODE_LOG.txt"
     try:
