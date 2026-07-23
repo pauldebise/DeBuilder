@@ -18,12 +18,14 @@ fi
 echo "[agent_loop] Demarrage de la boucle agent" >&2
 echo "[agent_loop] Python    : ${PYTHON_BIN}" >&2
 echo "[agent_loop] Modele    : ${DEBUILDER_MODEL:-}" >&2
+echo "[agent_loop] Effort    : ${DEBUILDER_EFFORT:-}" >&2
 echo "[agent_loop] DeBuilder : ${DEBUILDER_DIR}" >&2
 echo "[agent_loop] Cible     : ${TARGET_DIR}" >&2
 
 export DEBUILDER_DIR
 export DEBUILDER_TARGET_DIR="${TARGET_DIR}"
 export DEBUILDER_MODEL="${DEBUILDER_MODEL:-}"
+export DEBUILDER_EFFORT="${DEBUILDER_EFFORT:-}"
 
 ITERATION=0
 while true; do
