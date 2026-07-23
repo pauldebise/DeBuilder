@@ -55,6 +55,15 @@ if ! ${PYTHON_BIN} -c "import gradio" 2>/dev/null; then
         ${PYTHON_BIN} -m pip install gradio
 fi
 
+# Certaines images RunPod embarquent un "six" trop ancien (<1.17) dont
+# le mecanisme six.moves repose sur l'API find_module/load_module retiree
+# en Python 3.12+, ce qui casse l'import de gradio (via pandas/dateutil).
+if ! ${PYTHON_BIN} -c "import six.moves" 2>/dev/null; then
+    echo "[DeBuilder] six obsolete (incompatible Python 3.12+). Mise a jour..." >&2
+    ${PYTHON_BIN} -m pip install --upgrade "six>=1.17.0" --break-system-packages 2>/dev/null || \
+        ${PYTHON_BIN} -m pip install --upgrade "six>=1.17.0"
+fi
+
 if ! command -v opencode &>/dev/null && [ ! -x /usr/local/bin/opencode ]; then
     echo "[DeBuilder] OpenCode non trouve. Installation..." >&2
 
