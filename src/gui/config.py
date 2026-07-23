@@ -117,9 +117,14 @@ def _start_session(
         agent_script = (
             Path(__file__).parent.parent / "loop" / "agent_loop.sh"
         ).resolve()
+        python_bin = os.environ.get("DEBUILDER_PYTHON", "python3")
         subprocess.Popen(
             ["bash", str(agent_script)],
-            env={**os.environ, "DEBUILDER_TARGET_DIR": str(target_dir)},
+            env={
+                **os.environ,
+                "DEBUILDER_TARGET_DIR": str(target_dir),
+                "DEBUILDER_PYTHON": python_bin,
+            },
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

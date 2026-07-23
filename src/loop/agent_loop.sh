@@ -3,10 +3,10 @@ set -euo pipefail
 
 DEBUILDER_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
 TARGET_DIR="${DEBUILDER_TARGET_DIR:-}"
+PYTHON_BIN="${DEBUILDER_PYTHON:-python3}"
 
 if [ -z "${TARGET_DIR}" ]; then
     echo "[agent_loop] ERREUR: DEBUILDER_TARGET_DIR non definie." >&2
-    echo "[agent_loop] Definir la variable d'environnement et relancer." >&2
     exit 1
 fi
 
@@ -16,6 +16,7 @@ if [ ! -d "${TARGET_DIR}" ]; then
 fi
 
 echo "[agent_loop] Demarrage de la boucle agent" >&2
+echo "[agent_loop] Python    : ${PYTHON_BIN}" >&2
 echo "[agent_loop] DeBuilder : ${DEBUILDER_DIR}" >&2
 echo "[agent_loop] Cible     : ${TARGET_DIR}" >&2
 
@@ -29,7 +30,7 @@ while true; do
     echo "[agent_loop] Iteration #${ITERATION} - $(date)" >&2
 
     cd "${DEBUILDER_DIR}"
-    if ! python3 -c "
+    if ! ${PYTHON_BIN} -c "
 import sys
 sys.path.insert(0, '${DEBUILDER_DIR}')
 from src.loop.agent import run_iteration
