@@ -134,12 +134,11 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
     model = os.environ.get("DEBUILDER_MODEL", "")
     effort = os.environ.get("DEBUILDER_EFFORT", "")
     bin_path = shutil.which("opencode") or "/usr/local/bin/opencode"
-    cmd = [bin_path]
+    cmd = [bin_path, "-p", prompt]
     if model:
         cmd.extend(["--model", model])
     if effort:
         cmd.extend(["--effort", effort])
-    cmd.extend(["--prompt", prompt])
 
     return subprocess.run(
         cmd,
@@ -164,17 +163,19 @@ def _update_state_files(
     result: subprocess.CompletedProcess,
     suggestions_md: str,
 ) -> None:
-    if result.stdout.strip():
-        update_progress(target_dir, result.stdout.strip())
-    elif result.returncode != 0:
-        error_msg = result.stderr.strip() or f"OpenCode a echoue (code {result.returncode})"
+    if result.returncode != 0:
+        stderr = result.stderr.strip() if result.stderr else ""
+        stdout = result.stdout.strip() if result.stdout else ""
+        detail = (stderr or stdout)[:500]
         update_progress(
             target_dir,
             f"- **Action realisee** : Tentative d'iteration\n"
-            f"- **Resultat** : ECHEC\n"
-            f"- **Problemes rencontres** : {error_msg[:500]}\n"
-            f"- **Solutions envisagees** : Verifier la cle API et la configuration.\n",
+            f"- **Resultat** : ECHEC (code {result.returncode})\n"
+            f"- **Problemes rencontres** : {detail}\n"
+            f"- **Solutions envisagees** : Verifier la cle API et la configuration d'OpenCode.\n",
         )
+    elif result.stdout.strip():
+        update_progress(target_dir, result.stdout.strip())
 
     if suggestions_md.strip():
         clear_suggestions(target_dir)

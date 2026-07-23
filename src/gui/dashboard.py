@@ -4,6 +4,7 @@ Affichage en temps reel (polling) de:
 - L'etat d'avancement depuis PROGRESS.md
 - Les metriques depuis BENCHMARKS.md
 - Les alertes watchdog
+- Les alertes systeme DeBuilder (crash, erreur wrapper)
 """
 
 from pathlib import Path
@@ -19,9 +20,9 @@ def build_dashboard_tab(target_dir_state: gr.State) -> gr.TabItem:
     with gr.TabItem("Tableau de Bord") as tab:
         gr.Markdown("## Tableau de Bord")
 
-        progress_display = gr.Markdown(
-            value="*Aucune session active.*",
-        )
+        sys_alerts = gr.Markdown(value="", visible=False)
+
+        progress_display = gr.Markdown(value="*Aucune session active.*")
         benchmarks_display = gr.Dataframe(
             headers=["Parametre", "Valeur"],
             interactive=False,
@@ -36,20 +37,36 @@ def build_dashboard_tab(target_dir_state: gr.State) -> gr.TabItem:
         refresh_btn.click(
             fn=_refresh,
             inputs=[target_dir_state],
-            outputs=[progress_display, benchmarks_display, alerts_display],
+            outputs=[sys_alerts, progress_display, benchmarks_display, alerts_display],
         )
 
     return tab
 
 
-def _get_dashboard_data(target_dir_str: str) -> tuple[str, list, str]:
+def _get_dashboard_data(target_dir_str: str) -> tuple[str, str, list, str]:
     if not target_dir_str:
-        return "*Aucune session active.*", [], "*Aucune alerte.*"
+        return "", "*Aucune session active.*", [], "*Aucune alerte.*"
 
     target_dir = Path(target_dir_str)
 
     progress_md = read_state(target_dir, "PROGRESS.md")
     benches_md = read_state(target_dir, "BENCHMARKS.md")
+
+    sys_alert_text = ""
+    if "ECHEC" in progress_md or "Erreur" in progress_md:
+        lines = []
+        if "ECHEC" in progress_md:
+            lines.append(
+                "> :warning: **L'agent rencontre des echecs repetes. Verifiez la configuration OpenCode (cle API, modele) dans l'onglet Configuration.**"
+            )
+        if "opencode" not in progress_md.lower() and any(
+            kw in progress_md.lower()
+            for kw in ["introuvable", "not found", "command not found"]
+        ):
+            lines.append(
+                "> :x: **OpenCode est introuvable.** Installez-le : `curl -fsSL https://opencode.ai/install | bash`"
+            )
+        sys_alert_text = "\n\n".join(lines)
 
     progress_data = parse_progress(progress_md)
     latest = progress_data.get("latest_iteration", "*En attente...*")
@@ -72,6 +89,7 @@ def _get_dashboard_data(target_dir_str: str) -> tuple[str, list, str]:
     ) if alerts_list else "*Aucune alerte detectee.*"
 
     return (
+        sys_alert_text,
         progress_text or "*En attente de la premiere iteration...*",
         benchmarks,
         alerts_text,

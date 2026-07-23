@@ -147,7 +147,7 @@ def update_progress(target_dir: Path, new_entry: str, max_iterations: int = 2) -
             if not iteration.startswith("##"):
                 iteration = f"## {label}\n{iteration}"
             else:
-                iteration = re.sub(r"^##.*$", f"## {label}", iteration, count=1)
+                iteration = re.sub(r"^##[^\n]*", f"## {label}", iteration, count=1)
             body_parts.append(iteration + "\n")
 
         body_parts.append(_PROGRESS_SEPARATOR.lstrip("\n"))
