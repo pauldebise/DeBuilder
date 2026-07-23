@@ -23,6 +23,9 @@ fi
 echo "[DeBuilder] Python detecte: ${PYTHON_BIN} ($(${PYTHON_BIN} --version))" >&2
 export DEBUILDER_PYTHON="${PYTHON_BIN}"
 
+DEBUILDER_PORT="${DEBUILDER_PORT:-7680}"
+export DEBUILDER_PORT
+
 if ! ${PYTHON_BIN} -c "import gradio" 2>/dev/null; then
     echo "[DeBuilder] Gradio non installe. Installation..." >&2
     ${PYTHON_BIN} -m pip install gradio --break-system-packages 2>/dev/null || \
@@ -38,6 +41,6 @@ fi
 tmux new-session -d -s "${SESSION_NAME}" -c "${SCRIPT_DIR}" \
     "${PYTHON_BIN} -m src.app"
 
-echo "[DeBuilder] Demarre en arriere-plan (port 7680)." >&2
+echo "[DeBuilder] Demarre en arriere-plan (port ${DEBUILDER_PORT})." >&2
 echo "[DeBuilder] Pour attacher:  tmux attach-session -t ${SESSION_NAME}" >&2
 echo "[DeBuilder] Pour arreter:   tmux kill-session -t ${SESSION_NAME}" >&2

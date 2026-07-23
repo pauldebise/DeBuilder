@@ -1,12 +1,15 @@
 """Point d'entree principal de l'interface web DeBuilder.
 
-Lance l'application Gradio sur le port 7680 avec les onglets:
+Lance l'application Gradio sur le port 7680 (ou DEBUILDER_PORT)
+avec les onglets:
 - Configuration
 - Tableau de bord
 - Centre de controle
 - Requetes agent
 - Logs systemes
 """
+
+import os
 
 import gradio as gr
 
@@ -16,7 +19,7 @@ from src.gui.control import build_control_tab
 from src.gui.agents import build_agents_tab
 from src.gui.logs import build_logs_tab
 
-PORT = 7680
+PORT = int(os.environ.get("DEBUILDER_PORT", "7680"))
 TITLE = "DeBuilder - Orchestrateur OpenCode"
 
 
