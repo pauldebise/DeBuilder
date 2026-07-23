@@ -75,10 +75,23 @@ def test_timeout_raises(tmp_path: Path):
         release_lock(fd)
 
 
-def test_file_lock_creates_and_removes_lock_file(tmp_path: Path):
+def test_file_lock_creates_lock_file_and_keeps_it(tmp_path: Path):
+    # Le fichier de verrou doit persister apres usage : le supprimer
+    # ouvrirait une race TOCTOU entre deux processus concurrents
+    # (cf. docstring de file_lock).
     target = tmp_path / "target.txt"
     lock_path = Path(str(target) + ".lock")
     assert not lock_path.exists()
     with file_lock(target):
         assert lock_path.exists()
-    assert not lock_path.exists()
+    assert lock_path.exists()
+
+
+def test_file_lock_reusable_lock_file_across_calls(tmp_path: Path):
+    target = tmp_path / "target.txt"
+    with file_lock(target):
+        pass
+    with file_lock(target):
+        pass
+    lock_path = Path(str(target) + ".lock")
+    assert lock_path.exists()

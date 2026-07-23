@@ -20,6 +20,12 @@ def file_lock(filepath: Path):
         with file_lock(Path("/tmp/AGENTS.md")):
             ...
 
+    Le fichier de verrou n'est jamais supprime apres usage : le
+    supprimer creerait une fenetre de race (TOCTOU) ou un second
+    processus verrouille l'inode existant juste avant qu'un troisieme,
+    arrivant apres la suppression, en cree un nouveau et le verrouille
+    aussi. Les deux croiraient alors detenir un verrou exclusif.
+
     Args:
         filepath: Chemin du fichier a verrouiller.
     """
@@ -32,10 +38,6 @@ def file_lock(filepath: Path):
         release_lock(fd)
         try:
             os.close(fd)
-        except OSError:
-            pass
-        try:
-            os.remove(lock_path)
         except OSError:
             pass
 
