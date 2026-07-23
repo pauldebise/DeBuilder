@@ -13,6 +13,7 @@ import os
 
 import gradio as gr
 
+from src.core.session import load_last_session
 from src.gui.config import build_config_tab
 from src.gui.dashboard import build_dashboard_tab
 from src.gui.control import build_control_tab
@@ -29,6 +30,8 @@ def build_interface() -> gr.Blocks:
     Returns:
         L'application Gradio configuree.
     """
+    restored_session = load_last_session()
+
     with gr.Blocks(title=TITLE) as app:
         gr.Markdown("# DeBuilder - Orchestrateur OpenCode")
         gr.Markdown(
@@ -36,7 +39,15 @@ def build_interface() -> gr.Blocks:
             "Configuration, supervision et controle asynchrone."
         )
 
-        target_dir_state = gr.State("")
+        if restored_session:
+            gr.Markdown(
+                f"> :arrows_counterclockwise: **Session restauree** : "
+                f"`{restored_session}`. Si un agent tournait encore en "
+                f"arriere-plan, les onglets Tableau de Bord, Centre de "
+                f"Controle et Logs s'y reconnectent automatiquement."
+            )
+
+        target_dir_state = gr.State(str(restored_session) if restored_session else "")
 
         with gr.Tabs():
             config = build_config_tab(target_dir_state)
