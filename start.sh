@@ -34,23 +34,49 @@ fi
 
 if ! command -v opencode &>/dev/null; then
     echo "[DeBuilder] OpenCode non trouve. Installation..." >&2
-    if command -v npm &>/dev/null; then
-        npm install -g opencode 2>&1 || true
-    elif command -v node &>/dev/null; then
-        npm install -g opencode 2>&1 || true
-    else
-        echo "[DeBuilder] Installation de Node.js..." >&2
-        if command -v apt-get &>/dev/null; then
-            apt-get update -qq && apt-get install -y -qq nodejs npm 2>&1 || true
-        elif command -v apk &>/dev/null; then
-            apk add --no-cache nodejs npm 2>&1 || true
+
+    _install_opencode() {
+        # Methode 1: pip (si opencode est disponible sur PyPI)
+        if ${PYTHON_BIN} -m pip install opencode --break-system-packages 2>/dev/null; then
+            return 0
         fi
-        npm install -g opencode 2>&1 || true
-    fi
+
+        # Methode 2: npm (avec installation de Node.js si necessaire)
+        if ! command -v npm &>/dev/null && ! command -v node &>/dev/null; then
+            echo "[DeBuilder] Installation de Node.js..." >&2
+            if command -v apt-get &>/dev/null; then
+                apt-get update -qq && apt-get install -y -qq nodejs npm 2>/dev/null || true
+            elif command -v apk &>/dev/null; then
+                apk add --no-cache nodejs npm 2>/dev/null || true
+            elif command -v yum &>/dev/null; then
+                yum install -y nodejs npm 2>/dev/null || true
+            elif command -v brew &>/dev/null; then
+                brew install node 2>/dev/null || true
+            fi
+        fi
+
+        if command -v npm &>/dev/null; then
+            npm install -g opencode 2>/dev/null && return 0
+        fi
+
+        # Methode 3: curl + binary (dernier recours)
+        local os_arch
+        os_arch="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+        local bin_url="https://github.com/anomalyco/opencode/releases/latest/download/opencode-${os_arch}"
+        local bin_path="/usr/local/bin/opencode"
+        if curl -fsSL "$bin_url" -o "$bin_path" 2>/dev/null; then
+            chmod +x "$bin_path"
+            return 0
+        fi
+
+        return 1
+    }
+
+    _install_opencode
     if command -v opencode &>/dev/null; then
         echo "[DeBuilder] OpenCode installe avec succes." >&2
     else
-        echo "[DeBuilder] ATTENTION: OpenCode n'a pas pu etre installe automatiquement." >&2
+        echo "[DeBuilder] ATTENTION: OpenCode n'a pas pu etre installe." >&2
         echo "[DeBuilder] Installez-le manuellement: npm install -g opencode" >&2
     fi
 fi
