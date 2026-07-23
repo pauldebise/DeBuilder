@@ -140,6 +140,21 @@ def _inject_token(url: str, token: str) -> str:
     return url
 
 
+def _find_opencode() -> str | None:
+    """Trouve opencode dans le PATH ou les emplacements connus."""
+    path = shutil.which("opencode")
+    if path:
+        return path
+    for candidate in [
+        "/usr/local/bin/opencode",
+        Path.home() / ".opencode/bin/opencode",
+        Path.home() / "bin/opencode",
+    ]:
+        if Path(str(candidate)).exists():
+            return str(candidate)
+    return None
+
+
 def _configure_opencode_provider(provider: str, api_key: str, model: str) -> None:
     """Ecrit la configuration du provider dans le fichier opencode.
 
