@@ -36,30 +36,32 @@ if ! command -v opencode &>/dev/null; then
     echo "[DeBuilder] OpenCode non trouve. Installation..." >&2
 
     _install_opencode() {
-        # Methode 1: pip (si opencode est disponible sur PyPI)
-        if ${PYTHON_BIN} -m pip install opencode --break-system-packages 2>/dev/null; then
+        local _silent=">/dev/null 2>&1"
+
+        # Methode 1: pip
+        if ${PYTHON_BIN} -m pip install opencode --break-system-packages >/dev/null 2>&1; then
             return 0
         fi
 
         # Methode 2: npm (avec installation de Node.js si necessaire)
         if ! command -v npm &>/dev/null && ! command -v node &>/dev/null; then
-            echo "[DeBuilder] Installation de Node.js..." >&2
+            echo "[DeBuilder] Installation de Node.js (silencieuse)..." >&2
             if command -v apt-get &>/dev/null; then
-                apt-get update -qq && apt-get install -y -qq nodejs npm 2>/dev/null || true
+                apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq nodejs npm >/dev/null 2>&1 || true
             elif command -v apk &>/dev/null; then
-                apk add --no-cache nodejs npm 2>/dev/null || true
+                apk add --no-cache nodejs npm >/dev/null 2>&1 || true
             elif command -v yum &>/dev/null; then
-                yum install -y nodejs npm 2>/dev/null || true
+                yum install -y nodejs npm >/dev/null 2>&1 || true
             elif command -v brew &>/dev/null; then
-                brew install node 2>/dev/null || true
+                brew install node >/dev/null 2>&1 || true
             fi
         fi
 
         if command -v npm &>/dev/null; then
-            npm install -g opencode 2>/dev/null && return 0
+            npm install -g opencode >/dev/null 2>&1 && return 0
         fi
 
-        # Methode 3: curl + binary (dernier recours)
+        # Methode 3: curl + binaire
         local os_arch
         os_arch="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
         local bin_url="https://github.com/anomalyco/opencode/releases/latest/download/opencode-${os_arch}"
@@ -72,7 +74,7 @@ if ! command -v opencode &>/dev/null; then
         return 1
     }
 
-    _install_opencode
+    _install_opencode &>/dev/null
     if command -v opencode &>/dev/null; then
         echo "[DeBuilder] OpenCode installe avec succes." >&2
     else
