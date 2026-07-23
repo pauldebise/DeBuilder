@@ -133,3 +133,31 @@ def init_repo(target_dir: Path) -> bool:
     target_dir.mkdir(parents=True, exist_ok=True)
     result = _run(target_dir, "init")
     return result.returncode == 0
+
+
+def configure_git(
+    repo_dir: Path,
+    user_name: str = "DeBuilder Agent",
+    user_email: str = "agent@debuilder.local",
+    token: str = "",
+    remote_url: str = "",
+) -> None:
+    """Configure les identifiants Git et le remote avec token.
+
+    Args:
+        repo_dir: Chemin du depot cible.
+        user_name: Nom de l'auteur des commits.
+        user_email: Email de l'auteur.
+        token: Token GitHub pour authentification push.
+        remote_url: URL du remote a configurer si depot vierge.
+    """
+    _run(repo_dir, "config", "user.name", user_name)
+    _run(repo_dir, "config", "user.email", user_email)
+
+    if remote_url and token:
+        auth_url = remote_url.replace("https://", f"https://{token}@")
+        remotes = _run(repo_dir, "remote")
+        if "origin" in remotes.stdout:
+            _run(repo_dir, "remote", "set-url", "origin", auth_url)
+        else:
+            _run(repo_dir, "remote", "add", "origin", auth_url)

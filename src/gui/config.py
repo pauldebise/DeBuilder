@@ -14,7 +14,7 @@ import gradio as gr
 
 from src.core.state import init_project_state
 from src.core.secrets import inject_secrets
-from src.core.git import clone_repo, init_repo
+from src.core.git import clone_repo, init_repo, configure_git
 from src.utils.hw_audit import audit_hardware, format_for_agent
 
 PROVIDERS = {
@@ -60,8 +60,27 @@ def build_config_tab(target_dir_state: gr.State) -> gr.TabItem:
                 instructions = gr.Textbox(
                     label="Cahier des charges",
                     placeholder="Decrivez l'objectif du projet...",
-                    lines=5,
+                    lines=4,
                 )
+
+                gr.Markdown("### Git (optionnel)")
+                gh_token = gr.Textbox(
+                    label="Token GitHub",
+                    placeholder="ghp_... ou github_pat_...",
+                    type="password",
+                    info="Pour push automatique sur le depot.",
+                )
+                with gr.Row():
+                    git_name = gr.Textbox(
+                        label="Nom Git",
+                        placeholder="DeBuilder Agent",
+                        info="Auteur des commits.",
+                    )
+                    git_email = gr.Textbox(
+                        label="Email Git",
+                        placeholder="agent@debuilder.local",
+                        info="Email de l'auteur.",
+                    )
 
             with gr.Column(scale=1):
                 gr.Markdown("### Modele IA")
@@ -96,11 +115,28 @@ def build_config_tab(target_dir_state: gr.State) -> gr.TabItem:
 
         start_btn.click(
             fn=_start_session,
-            inputs=[repo_url, workspace_dir, instructions, provider, model, api_key],
+            inputs=[repo_url, workspace_dir, instructions, provider, model, api_key, gh_token, git_name, git_email],
             outputs=[status, target_dir_state],
         )
 
     return tab
+
+
+def _inject_token(url: str, token: str) -> str:
+    """Injecte un token GitHub dans l'URL pour l'authentification.
+
+    Args:
+        url: URL du depot (ex: https://github.com/user/repo.git).
+        token: Token GitHub (ghp_...).
+
+    Returns:
+        URL avec token injecte.
+    """
+    if not token:
+        return url
+    if url.startswith("https://"):
+        return url.replace("https://", f"https://{token}@")
+    return url
 
 
 def _find_opencode() -> str | None:
@@ -125,6 +161,9 @@ def _start_session(
     provider: str,
     model: str,
     api_key: str,
+    gh_token: str = "",
+    git_name: str = "",
+    git_email: str = "",
 ) -> tuple[str, str]:
     if not workspace_dir.strip():
         return "**Erreur :** Le repertoire de travail est obligatoire.", ""
@@ -143,7 +182,8 @@ def _start_session(
         if repo_url.strip():
             if target_dir.exists():
                 return f"**Erreur :** `{target_dir}` existe deja.", ""
-            if not clone_repo(repo_url.strip(), target_dir):
+            clone_url = _inject_token(repo_url.strip(), gh_token.strip() if gh_token else "")
+            if not clone_repo(clone_url, target_dir):
                 return "**Erreur :** Echec du clone du depot.", ""
             msg = f"Depot clone dans `{target_dir}`.\n\n"
         else:
@@ -154,6 +194,14 @@ def _start_session(
             if not init_repo(target_dir):
                 return "**Erreur :** Echec de l'initialisation Git.", ""
             msg = f"Nouveau projet initialise dans `{target_dir}`.\n\n"
+
+        configure_git(
+            target_dir,
+            user_name=git_name.strip() or "DeBuilder Agent",
+            user_email=git_email.strip() or "agent@debuilder.local",
+            token=gh_token.strip() if gh_token else "",
+            remote_url=repo_url.strip() if repo_url else "",
+        )
 
         provider_cfg = PROVIDERS.get(provider, PROVIDERS["Autre (custom)"])
         secrets = {}
