@@ -26,6 +26,29 @@ export DEBUILDER_PYTHON="${PYTHON_BIN}"
 DEBUILDER_PORT="${DEBUILDER_PORT:-7680}"
 export DEBUILDER_PORT
 
+# Images RunPod minimales (hors templates PyTorch) n'embarquent pas
+# toujours git/pip/tmux par defaut : on les installe au besoin plutot
+# que d'echouer avec un message peu clair.
+_apt_install() {
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq 2>/dev/null || true
+        apt-get install -y -qq "$@" 2>/dev/null || true
+    elif command -v apk &>/dev/null; then
+        apk add --no-cache "$@" 2>/dev/null || true
+    fi
+}
+
+if ! command -v git &>/dev/null; then
+    echo "[DeBuilder] git non trouve. Installation..." >&2
+    _apt_install git
+fi
+
+if ! ${PYTHON_BIN} -m pip --version &>/dev/null; then
+    echo "[DeBuilder] pip non trouve pour ${PYTHON_BIN}. Installation..." >&2
+    _apt_install python3-pip
+    ${PYTHON_BIN} -m ensurepip --upgrade 2>/dev/null || true
+fi
+
 if ! ${PYTHON_BIN} -c "import gradio" 2>/dev/null; then
     echo "[DeBuilder] Gradio non installe. Installation..." >&2
     ${PYTHON_BIN} -m pip install gradio --break-system-packages 2>/dev/null || \
@@ -90,6 +113,18 @@ if ! command -v opencode &>/dev/null && [ ! -x /usr/local/bin/opencode ]; then
         echo "[DeBuilder] OpenCode non installe." >&2
         echo "[DeBuilder] Log: /tmp/debuilder_opencode_install.log" >&2
     fi
+fi
+
+if ! command -v tmux &>/dev/null; then
+    echo "[DeBuilder] tmux non trouve. Installation..." >&2
+    _apt_install tmux
+fi
+
+if ! command -v tmux &>/dev/null; then
+    echo "[DeBuilder] ATTENTION: tmux indisponible et installation impossible." >&2
+    echo "[DeBuilder] Lancement direct (pas de persistance en cas de deconnexion)." >&2
+    cd "${SCRIPT_DIR}"
+    exec "${PYTHON_BIN}" -m src.app
 fi
 
 if tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
