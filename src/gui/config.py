@@ -22,25 +22,21 @@ PROVIDERS = {
         "env_keys": ["DEEPSEEK_API_KEY"],
         "base_url": "https://api.deepseek.com/v1",
         "default_model": "deepseek-v4-pro",
-        "default_effort": "max",
     },
     "OpenAI": {
         "env_keys": ["OPENAI_API_KEY"],
         "base_url": "",
         "default_model": "gpt-4o",
-        "default_effort": "",
     },
     "Anthropic": {
         "env_keys": ["ANTHROPIC_API_KEY"],
         "base_url": "",
         "default_model": "claude-sonnet-4-20250514",
-        "default_effort": "",
     },
     "Autre (custom)": {
         "env_keys": ["OPENAI_API_KEY"],
         "base_url": "",
         "default_model": "",
-        "default_effort": "",
     },
 }
 
@@ -211,7 +207,6 @@ def _start_session(
         secrets = {}
         base_url = provider_cfg["base_url"]
         actual_model = model or provider_cfg["default_model"]
-        effort = provider_cfg.get("default_effort", "")
 
         if api_key.strip():
             for key_name in provider_cfg["env_keys"]:
@@ -236,10 +231,7 @@ def _start_session(
 
         msg += "Cle API validee.\n"
         msg += f"Fournisseur : **{provider}**\n"
-        msg += f"Modele : `{actual_model}`\n"
-        if effort:
-            msg += f"Effort : `{effort}`\n"
-        msg += "\n"
+        msg += f"Modele : `{actual_model}`\n\n"
 
         hw = audit_hardware()
         hw_text = format_for_agent(hw)
@@ -264,7 +256,6 @@ def _start_session(
                 "DEBUILDER_TARGET_DIR": str(target_dir),
                 "DEBUILDER_PYTHON": python_bin,
                 "DEBUILDER_MODEL": actual_model,
-                "DEBUILDER_EFFORT": effort,
             },
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -291,7 +282,7 @@ def _validate_opencode(model: str) -> str:
     if not bin_path:
         return "Commande `opencode` introuvable."
 
-    cmd = [bin_path, "-p", "reply with just the word ok"]
+    cmd = [bin_path, "--prompt", "reply with just the word ok", "--auto"]
     if model:
         cmd.extend(["--model", model])
 

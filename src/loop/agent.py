@@ -132,13 +132,14 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
     import shutil
 
     model = os.environ.get("DEBUILDER_MODEL", "")
-    effort = os.environ.get("DEBUILDER_EFFORT", "")
     bin_path = shutil.which("opencode") or "/usr/local/bin/opencode"
-    cmd = [bin_path, "-p", prompt]
+    cmd = [
+        bin_path,
+        "--prompt", prompt,
+        "--auto",
+    ]
     if model:
         cmd.extend(["--model", model])
-    if effort:
-        cmd.extend(["--effort", effort])
 
     return subprocess.run(
         cmd,
