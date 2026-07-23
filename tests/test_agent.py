@@ -3,7 +3,7 @@
 import subprocess
 from pathlib import Path
 
-from src.loop.agent import _build_prompt, run_iteration
+from src.loop.agent import _build_prompt, _rotate_log_if_large, run_iteration
 from src.core.state import init_project_state, is_done, read_state, touch_done, write_state
 
 
@@ -94,6 +94,45 @@ def test_run_iteration_clears_suggestions(tmp_path, monkeypatch):
     run_iteration(target_dir)
     suggestions = read_state(target_dir, "SUGGESTIONS.md")
     assert suggestions == ""
+
+
+def test_run_iteration_survives_unexpected_exception(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+
+    def _boom(target_dir, prompt):
+        raise RuntimeError("panne inattendue")
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _boom)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: True)
+
+    result = run_iteration(target_dir)
+    assert result is True
+
+    progress = read_state(target_dir, "PROGRESS.md")
+    assert "ECHEC" in progress
+
+
+def test_rotate_log_if_large_truncates(tmp_path):
+    log_file = tmp_path / "OPENCODE_LOG.txt"
+    log_file.write_text("=== Iteration old ===\n" + ("x" * 1000) + "\n")
+
+    _rotate_log_if_large(log_file, max_bytes=100)
+
+    content = log_file.read_text()
+    assert len(content) < 1000
+    assert "tronque" in content
+
+
+def test_rotate_log_if_large_noop_when_small(tmp_path):
+    log_file = tmp_path / "OPENCODE_LOG.txt"
+    log_file.write_text("small content")
+
+    _rotate_log_if_large(log_file, max_bytes=100)
+
+    assert log_file.read_text() == "small content"
 
 
 def test_run_iteration_with_suggestions_in_prompt(tmp_path, monkeypatch):

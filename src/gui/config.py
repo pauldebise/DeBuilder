@@ -8,34 +8,40 @@ Configuration simplifiee de l'API et du modele OpenCode.
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import gradio as gr
 
 from src.core.state import init_project_state
 from src.core.secrets import inject_secrets
-from src.core.git import clone_repo, init_repo, configure_git
+from src.core.session import save_last_session
+from src.core.git import clone_repo, init_repo, configure_git, ensure_gitignore
 from src.utils.hw_audit import audit_hardware, format_for_agent
+from src.utils.text import strip_ansi
 
+# Les modeles opencode s'ecrivent toujours `fournisseur/modele`
+# (cf. `opencode models`). `prefix` sert a completer un nom saisi
+# sans fournisseur.
 PROVIDERS = {
     "DeepSeek": {
         "env_keys": ["DEEPSEEK_API_KEY"],
-        "base_url": "https://api.deepseek.com/v1",
-        "default_model": "deepseek-v4-pro",
+        "prefix": "deepseek",
+        "default_model": "deepseek/deepseek-v4-pro",
     },
     "OpenAI": {
         "env_keys": ["OPENAI_API_KEY"],
-        "base_url": "",
-        "default_model": "gpt-4o",
+        "prefix": "openai",
+        "default_model": "openai/gpt-5.2-codex",
     },
     "Anthropic": {
         "env_keys": ["ANTHROPIC_API_KEY"],
-        "base_url": "",
-        "default_model": "claude-sonnet-4-20250514",
+        "prefix": "anthropic",
+        "default_model": "anthropic/claude-sonnet-5",
     },
     "Autre (custom)": {
         "env_keys": ["OPENAI_API_KEY"],
-        "base_url": "",
+        "prefix": "",
         "default_model": "",
     },
 }
@@ -91,9 +97,9 @@ def build_config_tab(target_dir_state: gr.State) -> gr.TabItem:
                 )
                 model = gr.Textbox(
                     label="Modele",
-                    value="deepseek-v4-pro",
-                    placeholder="deepseek-v4-pro",
-                    info="Nom du modele pour OpenCode.",
+                    value="deepseek/deepseek-v4-pro",
+                    placeholder="deepseek/deepseek-v4-pro",
+                    info="Format opencode : fournisseur/modele.",
                 )
                 api_key = gr.Textbox(
                     label="Cle API",
@@ -154,6 +160,24 @@ def _find_opencode() -> str | None:
     return None
 
 
+def _normalize_model(model: str, provider_cfg: dict) -> str:
+    """Normalise un nom de modele au format opencode `fournisseur/modele`.
+
+    Args:
+        model: Nom saisi par l'utilisateur (ex: "deepseek-v4-pro").
+        provider_cfg: Entree de PROVIDERS pour le fournisseur choisi.
+
+    Returns:
+        Nom complet (ex: "deepseek/deepseek-v4-pro"), ou "" si inconnu.
+    """
+    model = (model or "").strip()
+    if not model:
+        model = provider_cfg["default_model"]
+    if model and "/" not in model and provider_cfg["prefix"]:
+        model = f"{provider_cfg['prefix']}/{model}"
+    return model
+
+
 def _start_session(
     repo_url: str,
     workspace_dir: str,
@@ -168,6 +192,13 @@ def _start_session(
     if not workspace_dir.strip():
         return "**Erreur :** Le repertoire de travail est obligatoire.", ""
 
+    if not api_key.strip():
+        return (
+            "**Erreur :** Aucune cle API fournie.\n\n"
+            "Renseignez une cle API valide pour le fournisseur **{}**.".format(provider),
+            "",
+        )
+
     if not _find_opencode():
         return (
             "**Erreur :** `opencode` n'est pas installe sur ce systeme.\n\n"
@@ -176,16 +207,47 @@ def _start_session(
             "",
         )
 
+    provider_cfg = PROVIDERS.get(provider, PROVIDERS["Autre (custom)"])
+    actual_model = _normalize_model(model, provider_cfg)
+    if not actual_model:
+        return (
+            "**Erreur :** Aucun modele renseigne.\n\n"
+            "Indiquez un modele au format `fournisseur/modele` "
+            "(ex: `deepseek/deepseek-v4-pro`, cf. `opencode models`).",
+            "",
+        )
+
     target_dir = Path(workspace_dir.strip()).expanduser().resolve()
 
     try:
+        secrets = {key_name: api_key.strip() for key_name in provider_cfg["env_keys"]}
+        if gh_token.strip():
+            # Nom contenant "TOKEN" pour etre reconnu automatiquement
+            # par sanitize_text() si jamais reflete dans une sortie
+            # (ex: l'agent qui lance `git remote -v`).
+            secrets["DEBUILDER_GH_TOKEN"] = gh_token.strip()
+        inject_secrets(secrets)
+
+        error = _validate_opencode(actual_model)
+        if error:
+            return (
+                f"**Erreur OpenCode :**\n```\n{error}\n```\n\n"
+                f"Verifiez votre cle API et le modele `{actual_model}` "
+                f"(format `fournisseur/modele`, cf. `opencode models`).",
+                "",
+            )
+
+        msg = "Cle API validee.\n"
+        msg += f"Fournisseur : **{provider}**\n"
+        msg += f"Modele : `{actual_model}`\n\n"
+
         if repo_url.strip():
             if target_dir.exists():
                 return f"**Erreur :** `{target_dir}` existe deja.", ""
             clone_url = _inject_token(repo_url.strip(), gh_token.strip() if gh_token else "")
             if not clone_repo(clone_url, target_dir):
                 return "**Erreur :** Echec du clone du depot.", ""
-            msg = f"Depot clone dans `{target_dir}`.\n\n"
+            msg += f"Depot clone dans `{target_dir}`.\n\n"
         else:
             if not target_dir.exists():
                 target_dir.mkdir(parents=True)
@@ -193,7 +255,9 @@ def _start_session(
                 return f"**Erreur :** `{target_dir}` n'est pas vide.", ""
             if not init_repo(target_dir):
                 return "**Erreur :** Echec de l'initialisation Git.", ""
-            msg = f"Nouveau projet initialise dans `{target_dir}`.\n\n"
+            msg += f"Nouveau projet initialise dans `{target_dir}`.\n\n"
+
+        ensure_gitignore(target_dir)
 
         configure_git(
             target_dir,
@@ -202,36 +266,6 @@ def _start_session(
             token=gh_token.strip() if gh_token else "",
             remote_url=repo_url.strip() if repo_url else "",
         )
-
-        provider_cfg = PROVIDERS.get(provider, PROVIDERS["Autre (custom)"])
-        secrets = {}
-        base_url = provider_cfg["base_url"]
-        actual_model = model or provider_cfg["default_model"]
-
-        if api_key.strip():
-            for key_name in provider_cfg["env_keys"]:
-                secrets[key_name] = api_key.strip()
-            if base_url:
-                secrets["OPENAI_BASE_URL"] = base_url
-
-        if not api_key.strip():
-            return (
-                "**Erreur :** Aucune cle API fournie.\n\n"
-                "Renseignez une cle API valide pour le fournisseur **{}**.".format(provider),
-                "",
-            )
-
-        inject_secrets(secrets)
-
-        msg = "Verification de la cle API...\n\n"
-
-        error = _validate_opencode(actual_model)
-        if error:
-            return f"**Erreur OpenCode :**\n```\n{error}\n```\n\nVerifiez votre cle API et le modele `{actual_model}`.", ""
-
-        msg += "Cle API validee.\n"
-        msg += f"Fournisseur : **{provider}**\n"
-        msg += f"Modele : `{actual_model}`\n\n"
 
         hw = audit_hardware()
         hw_text = format_for_agent(hw)
@@ -259,6 +293,8 @@ def _start_session(
             },
         )
 
+        save_last_session(target_dir)
+
         msg += "**Session lancee !** L'agent tourne en arriere-plan."
 
         return msg, str(target_dir)
@@ -270,8 +306,12 @@ def _start_session(
 def _validate_opencode(model: str) -> str:
     """Valide que opencode fonctionne avec la cle API.
 
+    Le test s'execute dans un repertoire temporaire vierge :
+    jamais dans le repertoire de DeBuilder (isolation), et sans
+    toucher au repertoire cible (un echec ne laisse aucun residu).
+
     Args:
-        model: Nom du modele a tester.
+        model: Nom du modele a tester (format `fournisseur/modele`).
 
     Returns:
         Message d'erreur, ou chaine vide si OK.
@@ -285,16 +325,22 @@ def _validate_opencode(model: str) -> str:
         cmd.extend(["--model", model])
 
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory(prefix="debuilder-validate-") as tmp_dir:
+            # opencode se fie a $PWD plutot qu'au cwd reel : il faut
+            # l'epingler pour ne pas qu'il tourne dans DeBuilder.
+            result = subprocess.run(
+                cmd + ["--dir", tmp_dir],
+                cwd=tmp_dir,
+                env={**os.environ, "PWD": tmp_dir},
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
         if result.returncode != 0:
-            stderr = result.stderr.strip() if result.stderr else ""
-            stdout = result.stdout.strip() if result.stdout else ""
+            stderr = strip_ansi(result.stderr).strip() if result.stderr else ""
+            stdout = strip_ansi(result.stdout).strip() if result.stdout else ""
             return stderr or stdout or f"Erreur inconnue (code {result.returncode})"
         return ""
     except subprocess.TimeoutExpired:

@@ -19,6 +19,13 @@ from src.core.state import (
     update_progress,
 )
 from src.core.git import stage_and_commit_all
+from src.core.secrets import sanitize_text
+from src.utils.text import strip_ansi
+
+# Taille max de OPENCODE_LOG.txt avant troncature : un job sans
+# surveillance (pod distant) ne doit pas remplir le disque au fil
+# des iterations.
+_MAX_LOG_BYTES = 5 * 1024 * 1024
 
 
 def run_iteration(target_dir: Path) -> bool:
@@ -33,37 +40,57 @@ def run_iteration(target_dir: Path) -> bool:
     if is_done(target_dir):
         return False
 
-    agents_md = read_state(target_dir, "AGENTS.md")
-    progress_md = read_state(target_dir, "PROGRESS.md")
-    benchmarks_md = read_state(target_dir, "BENCHMARKS.md")
-    suggestions_md = read_state(target_dir, "SUGGESTIONS.md")
-    resources_md = read_state(target_dir, "RESOURCES_NEEDED.md")
+    try:
+        agents_md = read_state(target_dir, "AGENTS.md")
+        progress_md = read_state(target_dir, "PROGRESS.md")
+        benchmarks_md = read_state(target_dir, "BENCHMARKS.md")
+        suggestions_md = read_state(target_dir, "SUGGESTIONS.md")
+        resources_md = read_state(target_dir, "RESOURCES_NEEDED.md")
 
-    prompt = _build_prompt(
-        agents_md=agents_md,
-        progress_md=progress_md,
-        benchmarks_md=benchmarks_md,
-        suggestions_md=suggestions_md,
-        resources_md=resources_md,
-    )
+        prompt = _build_prompt(
+            agents_md=agents_md,
+            progress_md=progress_md,
+            benchmarks_md=benchmarks_md,
+            suggestions_md=suggestions_md,
+            resources_md=resources_md,
+        )
 
-    _log(f"[agent] Lancement d'OpenCode...")
-    result = _run_opencode(target_dir, prompt)
-    _log(f"[agent] OpenCode termine (code={result.returncode})")
+        _log(f"[agent] Lancement d'OpenCode...")
+        result = _run_opencode(target_dir, prompt)
+        _log(f"[agent] OpenCode termine (code={result.returncode})")
 
-    if result.returncode != 0 and result.stderr:
-        _log(f"[agent] Erreur OpenCode: {result.stderr[:500]}")
+        if result.returncode != 0 and result.stderr:
+            _log(f"[agent] Erreur OpenCode: {result.stderr[:500]}")
 
-    barrier_files = sorted(target_dir.glob("BARRIER_*"))
-    if barrier_files:
-        _log(f"[agent] {len(barrier_files)} barriere(s) detectee(s), mise en pause...")
-        _handle_barriers(target_dir, barrier_files)
+        barrier_files = sorted(target_dir.glob("BARRIER_*"))
+        if barrier_files:
+            _log(f"[agent] {len(barrier_files)} barriere(s) detectee(s), mise en pause...")
+            _handle_barriers(target_dir, barrier_files)
 
-    _update_state_files(target_dir, result, suggestions_md)
+        _update_state_files(target_dir, result, suggestions_md)
+    except Exception as exc:
+        # Une iteration ne doit jamais tuer la boucle autonome : sur
+        # un pod sans surveillance, un crash non rattrape ici arrete
+        # l'agent de facon definitive jusqu'a intervention manuelle.
+        _log(f"[agent] ERREUR inattendue pendant l'iteration : {exc}")
+        _record_iteration_exception(target_dir, exc)
 
     stage_and_commit_all(target_dir, f"iteration {_timestamp()}")
 
     return not is_done(target_dir)
+
+
+def _record_iteration_exception(target_dir: Path, exc: Exception) -> None:
+    try:
+        update_progress(
+            target_dir,
+            f"- **Action realisee** : Tentative d'iteration\n"
+            f"- **Resultat** : ECHEC (exception inattendue)\n"
+            f"- **Problemes rencontres** : {sanitize_text(str(exc))}\n"
+            f"- **Solutions envisagees** : Verifier OPENCODE_LOG.txt et l'etat des fichiers.\n",
+        )
+    except Exception:
+        pass
 
 
 def _build_prompt(
@@ -133,13 +160,19 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
 
     model = os.environ.get("DEBUILDER_MODEL", "")
     bin_path = shutil.which("opencode") or "/usr/local/bin/opencode"
-    cmd = [bin_path, "run", prompt]
+    cmd = [bin_path, "run", prompt, "--dir", str(target_dir)]
     if model:
         cmd.extend(["--model", model])
+
+    # opencode se fie a $PWD plutot qu'au cwd reel du processus :
+    # sans cette correction, il travaillerait dans le repertoire
+    # de DeBuilder (celui de la boucle) au lieu du projet cible.
+    env = {**os.environ, "PWD": str(target_dir)}
 
     _log(f"[agent] opencode run --model {model or '(default)'} [...]")
 
     log_file = target_dir / "OPENCODE_LOG.txt"
+    _rotate_log_if_large(log_file)
     try:
         with open(log_file, "a") as lf:
             lf.write(f"\n=== Iteration {_timestamp()} ===\n")
@@ -149,14 +182,20 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(target_dir),
+                env=env,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
             stdout_lines: list[str] = []
             for line in proc.stdout:
-                stdout_lines.append(line)
-                lf.write(line)
+                # Sanitization au point de capture : cette meme sortie
+                # est ensuite injectee dans PROGRESS.md et commitee sur
+                # le depot cible (potentiellement pushee sur GitHub).
+                clean = sanitize_text(strip_ansi(line))
+                stdout_lines.append(clean)
+                lf.write(clean)
                 lf.flush()
             proc.wait(timeout=600)
 
@@ -177,6 +216,26 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
         )
 
 
+def _rotate_log_if_large(log_file: Path, max_bytes: int = _MAX_LOG_BYTES) -> None:
+    """Tronque OPENCODE_LOG.txt s'il devient trop volumineux.
+
+    Args:
+        log_file: Chemin du fichier de log.
+        max_bytes: Taille maximale avant troncature.
+    """
+    if not log_file.exists() or log_file.stat().st_size <= max_bytes:
+        return
+    content = log_file.read_text(encoding="utf-8", errors="replace")
+    kept = content[-(max_bytes // 2):]
+    cut = kept.find("\n=== Iteration ")
+    if cut > 0:
+        kept = kept[cut:]
+    log_file.write_text(
+        "[... historique tronque pour limiter la taille du log ...]\n" + kept,
+        encoding="utf-8",
+    )
+
+
 def _handle_barriers(target_dir: Path, barrier_files: list[Path]) -> None:
     for bf in barrier_files:
         while bf.exists():
@@ -193,7 +252,7 @@ def _update_state_files(
     if result.returncode != 0:
         stderr = result.stderr.strip() if result.stderr else ""
         stdout = result.stdout.strip() if result.stdout else ""
-        detail = (stderr or stdout)[:500]
+        detail = (stderr or stdout)[-500:]
         update_progress(
             target_dir,
             f"- **Action realisee** : Tentative d'iteration\n"
