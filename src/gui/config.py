@@ -5,7 +5,6 @@ environnement vierge ou en clonant un depot Git.
 Configuration simplifiee de l'API et du modele OpenCode.
 """
 
-import json
 import os
 import shutil
 import subprocess
@@ -155,80 +154,6 @@ def _find_opencode() -> str | None:
     return None
 
 
-def _configure_opencode_provider(provider: str, api_key: str, model: str) -> None:
-    """Ecrit la configuration du provider dans le fichier opencode.
-
-    Args:
-        provider: Nom du fournisseur.
-        api_key: Cle API.
-        model: Modele par defaut.
-    """
-    config_dir = Path.home() / ".config" / "opencode"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "config.json"
-
-    config = {}
-    if config_path.exists():
-        try:
-            config = json.loads(config_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            config = {}
-
-    provider_key = provider.lower().replace(" ", "_")
-
-    if "providers" not in config:
-        config["providers"] = {}
-
-    cfg = PROVIDERS.get(provider, PROVIDERS["Autre (custom)"])
-    base_url = cfg["base_url"]
-
-    config["providers"][provider_key] = {
-        "api_key": api_key,
-    }
-    if base_url:
-        config["providers"][provider_key]["base_url"] = base_url
-
-    if "model" not in config:
-        config["model"] = f"{provider_key}/{model}"
-
-    config_path.write_text(json.dumps(config, indent=2))
-
-    # Also set via CLI si disponible (best effort)
-    bin_path = _find_opencode()
-    if bin_path:
-        try:
-            subprocess.run(
-                [bin_path, "providers", "set", provider_key, "--api-key", api_key],
-                capture_output=True,
-                timeout=5,
-                check=False,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-        if base_url:
-            try:
-                subprocess.run(
-                    [bin_path, "providers", "set", provider_key, "--base-url", base_url],
-                    capture_output=True,
-                    timeout=5,
-                    check=False,
-                )
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-    """Trouve opencode dans le PATH ou les emplacements connus."""
-    path = shutil.which("opencode")
-    if path:
-        return path
-    for candidate in [
-        "/usr/local/bin/opencode",
-        Path.home() / ".opencode/bin/opencode",
-        Path.home() / "bin/opencode",
-    ]:
-        if Path(str(candidate)).exists():
-            return str(candidate)
-    return None
-
-
 def _start_session(
     repo_url: str,
     workspace_dir: str,
@@ -297,10 +222,6 @@ def _start_session(
             )
 
         inject_secrets(secrets)
-        try:
-            _configure_opencode_provider(provider, api_key.strip(), actual_model)
-        except Exception:
-            pass
 
         msg = "Verification de la cle API...\n\n"
 
