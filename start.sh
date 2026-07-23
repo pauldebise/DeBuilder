@@ -38,13 +38,17 @@ if ! command -v opencode &>/dev/null; then
     _install_opencode() {
         local _log="/tmp/debuilder_opencode_install.log"
 
-        # Methode 1: pip
-        if ${PYTHON_BIN} -m pip install opencode --break-system-packages >>"$_log" 2>&1; then
+        echo "=== DeBuilder opencode install log ===" > "$_log"
+        echo "Date: $(date)" >> "$_log"
+
+        # Methode 1: script officiel (recommande)
+        echo "[DeBuilder] Tentative via script officiel..." >&2
+        if curl -fsSL https://opencode.ai/install | bash >>"$_log" 2>&1; then
             return 0
         fi
 
-        # Methode 2: npm (avec installation de Node.js si necessaire)
-        if ! command -v npm &>/dev/null && ! command -v node &>/dev/null; then
+        # Methode 2: npm (package: opencode-ai)
+        if ! command -v npm &>/dev/null; then
             echo "[DeBuilder] Installation de Node.js..." >&2
             if command -v apt-get &>/dev/null; then
                 apt-get update -qq >>"$_log" 2>&1 && apt-get install -y -qq nodejs npm >>"$_log" 2>&1 || true
@@ -52,22 +56,16 @@ if ! command -v opencode &>/dev/null; then
                 apk add --no-cache nodejs npm >>"$_log" 2>&1 || true
             elif command -v yum &>/dev/null; then
                 yum install -y nodejs npm >>"$_log" 2>&1 || true
-            elif command -v brew &>/dev/null; then
-                brew install node >>"$_log" 2>&1 || true
             fi
         fi
-
         if command -v npm &>/dev/null; then
-            npm install -g opencode >>"$_log" 2>&1 && return 0
+            echo "[DeBuilder] Tentative via npm..." >&2
+            npm install -g opencode-ai@latest >>"$_log" 2>&1 && return 0
         fi
 
-        # Methode 3: curl + binaire
-        local os_arch
-        os_arch="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
-        local bin_url="https://github.com/anomalyco/opencode/releases/latest/download/opencode-${os_arch}"
-        local bin_path="/usr/local/bin/opencode"
-        if curl -fsSL "$bin_url" -o "$bin_path" 2>>"$_log"; then
-            chmod +x "$bin_path"
+        # Methode 3: pip (si jamais disponible un jour)
+        echo "[DeBuilder] Tentative via pip..." >&2
+        if ${PYTHON_BIN} -m pip install opencode --break-system-packages >>"$_log" 2>&1; then
             return 0
         fi
 
@@ -80,7 +78,9 @@ if ! command -v opencode &>/dev/null; then
     else
         echo "[DeBuilder] ATTENTION: OpenCode n'a pas pu etre installe." >&2
         echo "[DeBuilder] Details: /tmp/debuilder_opencode_install.log" >&2
-        echo "[DeBuilder] Installez-le manuellement: npm install -g opencode" >&2
+        echo "[DeBuilder] Installez-le manuellement:" >&2
+        echo "[DeBuilder]   curl -fsSL https://opencode.ai/install | bash" >&2
+        echo "[DeBuilder]   ou: npm install -g opencode-ai@latest" >&2
     fi
 fi
 
