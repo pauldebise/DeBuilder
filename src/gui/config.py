@@ -178,20 +178,28 @@ def _configure_opencode_provider(provider: str, api_key: str, model: str) -> Non
 
     config_path.write_text(json.dumps(config, indent=2))
 
-    # Also set via CLI si disponible (plus fiable)
-    subprocess.run(
-        ["opencode", "providers", "set", provider_key, "--api-key", api_key],
-        capture_output=True,
-        timeout=10,
-        check=False,
-    )
-    if base_url:
-        subprocess.run(
-            ["opencode", "providers", "set", provider_key, "--base-url", base_url],
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
+    # Also set via CLI si disponible (best effort)
+    bin_path = _find_opencode()
+    if bin_path:
+        try:
+            subprocess.run(
+                [bin_path, "providers", "set", provider_key, "--api-key", api_key],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        if base_url:
+            try:
+                subprocess.run(
+                    [bin_path, "providers", "set", provider_key, "--base-url", base_url],
+                    capture_output=True,
+                    timeout=5,
+                    check=False,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                pass
     """Trouve opencode dans le PATH ou les emplacements connus."""
     path = shutil.which("opencode")
     if path:
@@ -274,7 +282,10 @@ def _start_session(
             )
 
         inject_secrets(secrets)
-        _configure_opencode_provider(provider, api_key.strip(), actual_model)
+        try:
+            _configure_opencode_provider(provider, api_key.strip(), actual_model)
+        except Exception:
+            pass
 
         msg = "Verification de la cle API...\n\n"
 
