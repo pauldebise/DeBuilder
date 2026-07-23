@@ -103,6 +103,21 @@ def build_config_tab(target_dir_state: gr.State) -> gr.TabItem:
     return tab
 
 
+def _find_opencode() -> str | None:
+    """Trouve opencode dans le PATH ou les emplacements connus."""
+    path = shutil.which("opencode")
+    if path:
+        return path
+    for candidate in [
+        "/usr/local/bin/opencode",
+        Path.home() / ".opencode/bin/opencode",
+        Path.home() / "bin/opencode",
+    ]:
+        if Path(str(candidate)).exists():
+            return str(candidate)
+    return None
+
+
 def _start_session(
     repo_url: str,
     workspace_dir: str,
@@ -114,10 +129,11 @@ def _start_session(
     if not workspace_dir.strip():
         return "**Erreur :** Le repertoire de travail est obligatoire.", ""
 
-    if not shutil.which("opencode"):
+    if not _find_opencode():
         return (
             "**Erreur :** `opencode` n'est pas installe sur ce systeme.\n\n"
-            "Installez-le : `npm install -g opencode` ou via pip.",
+            "Installez-le : `curl -fsSL https://opencode.ai/install | bash`\n"
+            "ou : `npm install -g opencode-ai@latest`",
             "",
         )
 
@@ -214,7 +230,11 @@ def _validate_opencode(model: str) -> str:
     Returns:
         Message d'erreur, ou chaine vide si OK.
     """
-    cmd = ["opencode"]
+    bin_path = _find_opencode()
+    if not bin_path:
+        return "Commande `opencode` introuvable."
+
+    cmd = [bin_path]
     if model:
         cmd.extend(["--model", model])
     cmd.extend(["--prompt", "reply with just the word ok"])

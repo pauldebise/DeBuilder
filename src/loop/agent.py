@@ -129,8 +129,11 @@ def _build_prompt(
 
 
 def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
+    import shutil
+
     model = os.environ.get("DEBUILDER_MODEL", "")
-    cmd = ["opencode"]
+    bin_path = shutil.which("opencode") or "/usr/local/bin/opencode"
+    cmd = [bin_path]
     if model:
         cmd.extend(["--model", model])
     cmd.extend(["--prompt", prompt])
