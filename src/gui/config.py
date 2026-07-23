@@ -257,8 +257,6 @@ def _start_session(
                 "DEBUILDER_PYTHON": python_bin,
                 "DEBUILDER_MODEL": actual_model,
             },
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
         )
 
         msg += "**Session lancee !** L'agent tourne en arriere-plan."

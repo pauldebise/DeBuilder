@@ -141,14 +141,44 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
     if model:
         cmd.extend(["--model", model])
 
-    return subprocess.run(
-        cmd,
-        cwd=str(target_dir),
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=False,
-    )
+    _log(f"[agent] Commande: {' '.join(cmd)}")
+
+    log_file = target_dir / "OPENCODE_LOG.txt"
+    try:
+        with open(log_file, "a") as lf:
+            lf.write(f"\n=== Iteration {_timestamp()} ===\n")
+            lf.write(f"Model: {model}\n")
+            lf.write(f"Prompt length: {len(prompt)} chars\n\n")
+
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(target_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            stdout_lines: list[str] = []
+            for line in proc.stdout:
+                stdout_lines.append(line)
+                lf.write(line)
+                lf.flush()
+            proc.wait(timeout=600)
+
+            stdout_text = "".join(stdout_lines)
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=proc.returncode,
+                stdout=stdout_text,
+                stderr="",
+            )
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=-1,
+            stdout="",
+            stderr="Timeout apres 600s",
+        )
 
 
 def _handle_barriers(target_dir: Path, barrier_files: list[Path]) -> None:
