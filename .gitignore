@@ -1,0 +1,43 @@
+# Bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment (secrets)
+.env
+.env.*
+
+# Logs
+*.log
+logs/
+
+# Runtime
+*.pid
+tmp/
+
+# Gradio
+gradio_cached_examples/
+
+# Workspaces cibles (ne jamais tracker les projets sur lesquels l'agent travaille)
+workspaces/
