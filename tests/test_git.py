@@ -5,6 +5,7 @@ from pathlib import Path
 
 from src.core.git import (
     commit_all,
+    ensure_gitignore,
     init_repo,
     rollback_last,
     stage_and_commit_all,
@@ -93,6 +94,60 @@ def test_stage_and_commit_all_no_changes(tmp_path: Path):
 
     result = stage_and_commit_all(repo_dir, "iteration 2 - no changes")
     assert result
+
+
+def test_ensure_gitignore_creates_entries(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+
+    ensure_gitignore(repo_dir)
+
+    content = (repo_dir / ".gitignore").read_text()
+    for pattern in ["DONE", "BARRIER_*", "*.lock", "OPENCODE_LOG.txt"]:
+        assert pattern in content
+
+
+def test_ensure_gitignore_preserves_existing_content(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / ".gitignore").write_text("node_modules/\n*.pyc\n")
+
+    ensure_gitignore(repo_dir)
+
+    content = (repo_dir / ".gitignore").read_text()
+    assert "node_modules/" in content
+    assert "*.pyc" in content
+    assert "DONE" in content
+
+
+def test_ensure_gitignore_idempotent(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+
+    ensure_gitignore(repo_dir)
+    ensure_gitignore(repo_dir)
+
+    content = (repo_dir / ".gitignore").read_text()
+    assert content.count("DONE") == 1
+
+
+def test_stage_and_commit_all_ignores_operational_files(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    ensure_gitignore(repo_dir)
+
+    (repo_dir / "work.txt").write_text("progress")
+    (repo_dir / "DONE").touch()
+    (repo_dir / "OPENCODE_LOG.txt").write_text("raw output")
+    (repo_dir / "PROGRESS.md.lock").touch()
+
+    stage_and_commit_all(repo_dir, "iteration 1")
+
+    tracked = _run(repo_dir, "ls-files").stdout.splitlines()
+    assert "work.txt" in tracked
+    assert "DONE" not in tracked
+    assert "OPENCODE_LOG.txt" not in tracked
+    assert "PROGRESS.md.lock" not in tracked
 
 
 def test_operations_isolated_from_debuilder(tmp_path: Path):

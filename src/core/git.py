@@ -8,6 +8,11 @@ le depot DeBuilder.
 import subprocess
 from pathlib import Path
 
+# Fichiers operationnels de DeBuilder : jamais des livrables du projet
+# cible, ne doivent donc jamais etre commites (DONE commite ferait
+# demarrer toute future session avec le kill-switch actif).
+_DEBUILDER_IGNORE_PATTERNS = ["DONE", "BARRIER_*", "*.lock", "OPENCODE_LOG.txt"]
+
 
 def _run(repo_dir: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -133,6 +138,31 @@ def init_repo(target_dir: Path) -> bool:
     target_dir.mkdir(parents=True, exist_ok=True)
     result = _run(target_dir, "init")
     return result.returncode == 0
+
+
+def ensure_gitignore(repo_dir: Path) -> None:
+    """S'assure que les fichiers operationnels de DeBuilder sont ignores.
+
+    N'ecrase jamais un .gitignore existant (cas d'un depot clone) :
+    ajoute uniquement les entrees manquantes.
+
+    Args:
+        repo_dir: Chemin du depot cible.
+    """
+    gitignore_path = repo_dir / ".gitignore"
+    existing = gitignore_path.read_text(encoding="utf-8") if gitignore_path.exists() else ""
+
+    missing = [p for p in _DEBUILDER_IGNORE_PATTERNS if p not in existing]
+    if not missing:
+        return
+
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+
+    addition = "\n# DeBuilder : fichiers operationnels, jamais versionnes\n"
+    addition += "\n".join(missing) + "\n"
+
+    gitignore_path.write_text(existing + addition, encoding="utf-8")
 
 
 def configure_git(
