@@ -79,8 +79,9 @@ def test_stage_and_commit_all(tmp_path: Path):
     _init_test_repo(repo_dir)
 
     (repo_dir / "work.txt").write_text("progress")
-    result = stage_and_commit_all(repo_dir, "iteration 1")
-    assert result
+    success, detail = stage_and_commit_all(repo_dir, "iteration 1")
+    assert success
+    assert detail == ""
 
     log = _run(repo_dir, "log", "--oneline")
     assert "iteration 1" in log.stdout
@@ -92,8 +93,21 @@ def test_stage_and_commit_all_no_changes(tmp_path: Path):
     (repo_dir / "work.txt").write_text("progress")
     stage_and_commit_all(repo_dir, "iteration 1")
 
-    result = stage_and_commit_all(repo_dir, "iteration 2 - no changes")
-    assert result
+    success, detail = stage_and_commit_all(repo_dir, "iteration 2 - no changes")
+    assert success
+    assert detail == ""
+
+
+def test_stage_and_commit_all_reports_push_failure_detail(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    _run(repo_dir, "remote", "add", "origin", str(tmp_path / "does-not-exist"))
+
+    (repo_dir / "work.txt").write_text("progress")
+    success, detail = stage_and_commit_all(repo_dir, "iteration 1")
+
+    assert not success
+    assert detail != ""
 
 
 def test_ensure_gitignore_creates_entries(tmp_path: Path):

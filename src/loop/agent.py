@@ -82,8 +82,12 @@ def run_iteration(target_dir: Path) -> bool:
         _log(f"[agent] ERREUR inattendue pendant l'iteration : {exc}")
         _record_iteration_exception(target_dir, exc)
 
-    if not stage_and_commit_all(target_dir, f"iteration {_timestamp()}"):
-        _log("[agent] ATTENTION: echec du commit/push automatique de fin d'iteration.")
+    committed, detail = stage_and_commit_all(target_dir, f"iteration {_timestamp()}")
+    if not committed:
+        _log(
+            "[agent] ATTENTION: echec du commit/push automatique de fin "
+            f"d'iteration: {sanitize_text(detail)[:500]}"
+        )
 
     return not is_done(target_dir)
 
@@ -173,7 +177,17 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
     # process en attente d'une reponse sur stdin, qui est ferme
     # (DEVNULL) puisque la boucle tourne sans surveillance. Conforme
     # a l'exigence d'autonomie/non-blocage du cahier des charges.
-    cmd = [bin_path, "run", prompt, "--dir", str(target_dir), "--auto"]
+    # --print-logs/--log-level DEBUG : sans ca, un blocage cote OpenCode
+    # (reseau vers le provider, indexation du projet, etc.) n'affiche
+    # rien dans OPENCODE_LOG.txt jusqu'au timeout, ce qui rend le
+    # diagnostic impossible a distance (cf. figements observes sur pod).
+    cmd = [
+        bin_path, "run", prompt,
+        "--dir", str(target_dir),
+        "--auto",
+        "--print-logs",
+        "--log-level", "DEBUG",
+    ]
     if model:
         cmd.extend(["--model", model])
 

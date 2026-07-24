@@ -46,7 +46,7 @@ def commit_all(repo_dir: Path, message: str) -> bool:
     return commit_result.returncode == 0
 
 
-def push(repo_dir: Path) -> bool:
+def push(repo_dir: Path) -> tuple[bool, str]:
     """Push les commits sur le remote.
 
     Definit systematiquement l'upstream (-u) : sur un depot flambant
@@ -58,17 +58,21 @@ def push(repo_dir: Path) -> bool:
         repo_dir: Chemin du depot Git cible.
 
     Returns:
-        True si le push a reussi, False sinon.
+        Tuple (succes, detail). detail est vide en cas de succes, ou
+        contient la sortie git en cas d'echec (auth, remote injoignable,
+        etc.) pour permettre un diagnostic sans acces au pod.
     """
     branch_result = _run(repo_dir, "rev-parse", "--abbrev-ref", "HEAD")
     branch = branch_result.stdout.strip()
     if not branch or branch == "HEAD":
-        return False
+        return False, "impossible de determiner la branche courante"
     result = _run(repo_dir, "push", "-u", "origin", branch)
-    return result.returncode == 0
+    if result.returncode == 0:
+        return True, ""
+    return False, (result.stderr.strip() or result.stdout.strip())
 
 
-def stage_and_commit_all(repo_dir: Path, message: str) -> bool:
+def stage_and_commit_all(repo_dir: Path, message: str) -> tuple[bool, str]:
     """Stage tous les changements, commit et push.
 
     Utilise par l'agent apres chaque iteration pour garantir
@@ -85,22 +89,23 @@ def stage_and_commit_all(repo_dir: Path, message: str) -> bool:
         message: Message de commit.
 
     Returns:
-        True si l'operation complete a reussi.
+        Tuple (succes, detail). detail est vide en cas de succes, ou
+        contient la raison de l'echec (add/commit/push) sinon.
     """
     add_result = _run(repo_dir, "add", "-A")
     if add_result.returncode != 0:
-        return False
+        return False, add_result.stderr.strip()
 
     diff_result = _run(repo_dir, "diff", "--cached", "--quiet")
     if diff_result.returncode != 0:
         commit_result = _run(repo_dir, "commit", "-m", message)
         if commit_result.returncode != 0:
-            return False
+            return False, commit_result.stderr.strip()
 
     remote_result = _run(repo_dir, "remote")
     if remote_result.stdout.strip():
         return push(repo_dir)
-    return True
+    return True, ""
 
 
 def rollback_last(repo_dir: Path) -> bool:

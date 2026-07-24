@@ -72,7 +72,7 @@ def test_run_iteration_updates_progress(tmp_path, monkeypatch):
     init_project_state(target_dir, instructions="Test project")
 
     monkeypatch.setattr(agent_mod, "_run_opencode", _mock_run_opencode)
-    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: True)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
 
     result = run_iteration(target_dir)
     assert result is True
@@ -89,7 +89,7 @@ def test_run_iteration_clears_suggestions(tmp_path, monkeypatch):
     write_state(target_dir, "SUGGESTIONS.md", "Use Redis for caching.\n")
 
     monkeypatch.setattr(agent_mod, "_run_opencode", _mock_run_opencode)
-    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: True)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
 
     run_iteration(target_dir)
     suggestions = read_state(target_dir, "SUGGESTIONS.md")
@@ -106,7 +106,7 @@ def test_run_iteration_survives_unexpected_exception(tmp_path, monkeypatch):
         raise RuntimeError("panne inattendue")
 
     monkeypatch.setattr(agent_mod, "_run_opencode", _boom)
-    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: True)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
 
     result = run_iteration(target_dir)
     assert result is True
@@ -148,7 +148,7 @@ def test_run_iteration_with_suggestions_in_prompt(tmp_path, monkeypatch):
         return _mock_run_opencode(target_dir, prompt)
 
     monkeypatch.setattr(agent_mod, "_run_opencode", mock_opencode)
-    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: True)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
 
     run_iteration(target_dir)
     assert len(captured_prompts) == 1
