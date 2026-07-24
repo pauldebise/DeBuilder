@@ -344,7 +344,10 @@ def _validate_opencode(model: str) -> str:
             return stderr or stdout or f"Erreur inconnue (code {result.returncode})"
         return ""
     except subprocess.TimeoutExpired:
-        return ""
+        return (
+            "Le test de la cle API a expire apres 60s (opencode ne repond pas : "
+            "cle invalide, ou en attente d'une confirmation interactive)."
+        )
     except FileNotFoundError:
         return "Commande `opencode` introuvable."
     except Exception as e:
