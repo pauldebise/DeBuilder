@@ -231,22 +231,20 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
     # process en attente d'une reponse sur stdin, qui est ferme
     # (DEVNULL) puisque la boucle tourne sans surveillance. Conforme
     # a l'exigence d'autonomie/non-blocage du cahier des charges.
-    # --print-logs : sans ca, un blocage cote OpenCode (reseau vers le
-    # provider, indexation du projet, etc.) n'affiche rien dans
-    # OPENCODE_LOG.txt jusqu'au timeout, ce qui rend le diagnostic
-    # impossible a distance (cf. figements observes sur pod).
-    # --log-level INFO : suffisant pour ce heartbeat (creation de
-    # session, etapes de la boucle agent, streaming LLM) ; DEBUG
-    # n'ajoute que du bruit de chargement de config sans valeur
-    # diagnostique, pour un cout en taille de log plus eleve.
+    # Pas de --print-logs/--log-level : ces flags font ecrire dans
+    # OPENCODE_LOG.txt les logs internes d'OpenCode (tracking git,
+    # session/stream, permissions evaluees) en plus de la sortie
+    # normale de la commande, ce qu'un usage manuel de `opencode run`
+    # n'affiche jamais. Le watchdog ci-dessous (timeout d'inactivite +
+    # duree totale) gere deja les blocages sans avoir besoin de ce
+    # heartbeat ; le retirer garde OPENCODE_LOG.txt au niveau de
+    # verbosite d'un usage manuel et limite sa croissance.
     cmd = [
         bin_path, "run",
         "Suis les instructions du fichier joint.",
         "--file", prompt_file.name,
         "--dir", str(target_dir),
         "--auto",
-        "--print-logs",
-        "--log-level", "INFO",
     ]
     if model:
         cmd.extend(["--model", model])
