@@ -64,7 +64,10 @@ def _get_dashboard_data(target_dir_str: str) -> tuple[str, str, str, list, str]:
     target_dir = Path(target_dir_str)
 
     log_tail = read_log_tail(target_dir, "OPENCODE_LOG.txt", 200)
-    activity_text = summarize_logs(log_tail, cache_key=str(target_dir))
+    activity_summary = summarize_logs(log_tail, cache_key=str(target_dir))
+    activity_text = activity_summary.text
+    if activity_summary.warning:
+        activity_text = f"> :warning: **{activity_summary.warning}**\n\n{activity_text}"
 
     progress_md = read_state(target_dir, "PROGRESS.md")
     benches_md = read_state(target_dir, "BENCHMARKS.md")

@@ -15,6 +15,7 @@ fonctionnel hors ligne.
 import hashlib
 import os
 import re
+from dataclasses import dataclass
 
 import httpx
 
@@ -54,12 +55,26 @@ _PROVIDERS = {
     },
 }
 
+@dataclass(frozen=True)
+class LogSummary:
+    """Resultat d'un resume : texte affiche + avertissement optionnel.
+
+    ``warning`` n'est renseigne que si le resume LLM a ete tente et a
+    echoue (provider configure mais appel en erreur) : l'absence de
+    provider configure est un etat normal, pas une erreur, donc ne
+    produit pas d'avertissement.
+    """
+
+    text: str
+    warning: str | None = None
+
+
 # cache_key -> (hash du dernier log resume, resume). Evite de rappeler
 # le LLM a chaque tick de polling si le log n'a pas change.
-_cache: dict[str, tuple[str, str]] = {}
+_cache: dict[str, tuple[str, LogSummary]] = {}
 
 
-def summarize_logs(raw_log: str, cache_key: str) -> str:
+def summarize_logs(raw_log: str, cache_key: str) -> LogSummary:
     """Resume un extrait de log en langage humain.
 
     Args:
@@ -68,34 +83,58 @@ def summarize_logs(raw_log: str, cache_key: str) -> str:
             eviter un appel LLM redondant si le contenu n'a pas change.
 
     Returns:
-        Resume en langage humain (via LLM ou heuristique de repli).
+        Resume en langage humain (via LLM ou heuristique de repli),
+        avec un avertissement si le repli heuristique fait suite a un
+        echec de l'appel LLM.
     """
     if not raw_log.strip():
-        return "*En attente de la premiere action de l'agent...*"
+        return LogSummary("*En attente de la premiere action de l'agent...*")
 
     log_hash = hashlib.sha256(raw_log.encode("utf-8", errors="ignore")).hexdigest()
     cached = _cache.get(cache_key)
     if cached and cached[0] == log_hash:
         return cached[1]
 
-    summary = _summarize_with_llm(raw_log) or _summarize_heuristic(raw_log)
+    text, llm_error = _summarize_with_llm(raw_log)
+    if text is None:
+        warning = (
+            f"Resume LLM indisponible ({llm_error}) : resume heuristique utilise a la place."
+            if llm_error
+            else None
+        )
+        summary = LogSummary(_summarize_heuristic(raw_log), warning)
+    else:
+        summary = LogSummary(text)
+
     _cache[cache_key] = (log_hash, summary)
     return summary
 
 
-def _summarize_with_llm(raw_log: str) -> str | None:
+def _summarize_with_llm(raw_log: str) -> tuple[str | None, str | None]:
+    """Tente un resume via LLM.
+
+    Returns:
+        Tuple ``(texte, raison_echec)``. Si aucun provider n'est
+        configure, ``(None, None)`` (etat normal, pas une erreur). Si
+        l'appel echoue, ``(None, raison)`` avec une description courte
+        exploitable pour un avertissement utilisateur.
+    """
     provider = _active_provider()
     if not provider:
-        return None
+        return None, None
 
     clean_log = sanitize_text(raw_log)[-_MAX_LOG_CHARS:]
 
     try:
         if provider["kind"] == "anthropic":
-            return _call_anthropic(provider, clean_log)
-        return _call_openai_compatible(provider, clean_log)
-    except (httpx.HTTPError, KeyError, ValueError, IndexError):
-        return None
+            return _call_anthropic(provider, clean_log), None
+        return _call_openai_compatible(provider, clean_log), None
+    except httpx.HTTPStatusError as exc:
+        return None, f"erreur HTTP {exc.response.status_code}"
+    except httpx.HTTPError as exc:
+        return None, type(exc).__name__
+    except (KeyError, ValueError, IndexError):
+        return None, "reponse du fournisseur illisible"
 
 
 def _active_provider() -> dict | None:

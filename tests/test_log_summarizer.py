@@ -19,21 +19,23 @@ def cleanup():
 
 
 def test_empty_log_returns_placeholder():
-    assert "attente" in summarize_logs("", cache_key="empty").lower()
+    assert "attente" in summarize_logs("", cache_key="empty").text.lower()
 
 
 def test_no_provider_configured_uses_heuristic():
     # Aucune cle API en environnement : pas d'appel LLM possible.
     raw_log = "=== Iteration 2026-07-24 10:00:00 ===\nModel: deepseek/deepseek-v4-pro\nTout va bien.\n"
     summary = summarize_logs(raw_log, cache_key="no-provider")
-    assert "Iteration en cours depuis 2026-07-24 10:00:00" in summary
-    assert "Aucune erreur" in summary
+    assert "Iteration en cours depuis 2026-07-24 10:00:00" in summary.text
+    assert "Aucune erreur" in summary.text
+    # Pas de provider configure = etat normal, pas une erreur a signaler.
+    assert summary.warning is None
 
 
 def test_heuristic_detects_errors():
     raw_log = "=== Iteration X ===\nSomething failed: Erreur critique\n"
     summary = summarize_logs(raw_log, cache_key="with-error")
-    assert "erreurs sont visibles" in summary.lower()
+    assert "erreurs sont visibles" in summary.text.lower()
 
 
 def test_cache_avoids_recompute_on_unchanged_log():
@@ -49,7 +51,7 @@ def test_cache_avoids_recompute_on_unchanged_log():
 def test_cache_recomputes_on_changed_log():
     summarize_logs("=== Iteration A ===\nOK\n", cache_key="changing-key")
     changed = summarize_logs("=== Iteration B ===\nErreur\n", cache_key="changing-key")
-    assert "Iteration en cours depuis B" in changed
+    assert "Iteration en cours depuis B" in changed.text
 
 
 def test_llm_called_when_provider_configured(monkeypatch):
@@ -75,12 +77,13 @@ def test_llm_called_when_provider_configured(monkeypatch):
 
     summary = summarize_logs("=== Iteration A ===\nTout va bien.\n", cache_key="llm-key")
 
-    assert summary == "Resume genere."
+    assert summary.text == "Resume genere."
+    assert summary.warning is None
     assert captured["url"] == "https://api.deepseek.com/chat/completions"
     assert captured["json"]["model"] == "deepseek-chat"
 
 
-def test_llm_failure_falls_back_to_heuristic(monkeypatch):
+def test_llm_failure_falls_back_to_heuristic_with_warning(monkeypatch):
     os.environ["DEBUILDER_MODEL"] = "openai/gpt-5.2-codex"
     os.environ["OPENAI_API_KEY"] = "sk-test-key-1234567890"
 
@@ -91,7 +94,29 @@ def test_llm_failure_falls_back_to_heuristic(monkeypatch):
 
     summary = summarize_logs("=== Iteration A ===\nTout va bien.\n", cache_key="fallback-key")
 
-    assert "Iteration en cours depuis A" in summary
+    assert "Iteration en cours depuis A" in summary.text
+    # L'echec LLM (provider configure mais appel en erreur) doit etre
+    # signale, avec la raison, pour que l'utilisateur sache que le
+    # resume affiche est le repli heuristique et non le resume LLM.
+    assert summary.warning is not None
+    assert "ConnectError" in summary.warning
+
+
+def test_llm_http_error_reports_status_in_warning(monkeypatch):
+    os.environ["DEBUILDER_MODEL"] = "deepseek/deepseek-chat"
+    os.environ["DEEPSEEK_API_KEY"] = "sk-test-key-1234567890"
+
+    def failing_post(*args, **kwargs):
+        request = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
+        response = httpx.Response(429, request=request)
+        raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    monkeypatch.setattr(httpx, "post", failing_post)
+
+    summary = summarize_logs("=== Iteration A ===\nTout va bien.\n", cache_key="http-error-key")
+
+    assert summary.warning is not None
+    assert "429" in summary.warning
 
 
 def test_secrets_never_sent_to_llm(monkeypatch):
