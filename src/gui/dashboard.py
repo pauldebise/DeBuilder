@@ -1,6 +1,7 @@
 """Onglet Tableau de Bord (lecture seule).
 
-Affichage en temps reel (polling) de:
+Affichage en temps reel (polling toutes les 30s) de:
+- Un resume en langage humain de l'activite en cours (OPENCODE_LOG.txt)
 - L'etat d'avancement depuis PROGRESS.md
 - Les metriques depuis BENCHMARKS.md
 - Les alertes watchdog
@@ -11,8 +12,12 @@ from pathlib import Path
 
 import gradio as gr
 
+from src.core.log_summarizer import summarize_logs
 from src.core.state import read_state
 from src.utils.markdown_parser import parse_progress, parse_benchmarks, parse_alerts
+from src.utils.text import read_log_tail
+
+_POLL_INTERVAL_SECONDS = 30
 
 
 def build_dashboard_tab(target_dir_state: gr.State) -> gr.TabItem:
@@ -22,6 +27,9 @@ def build_dashboard_tab(target_dir_state: gr.State) -> gr.TabItem:
 
         sys_alerts = gr.Markdown(value="", visible=False)
 
+        gr.Markdown("### Activite en cours")
+        activity_display = gr.Markdown(value="*Aucune session active.*")
+
         progress_display = gr.Markdown(value="*Aucune session active.*")
         benchmarks_display = gr.Dataframe(
             headers=["Parametre", "Valeur"],
@@ -30,24 +38,33 @@ def build_dashboard_tab(target_dir_state: gr.State) -> gr.TabItem:
         alerts_display = gr.Markdown(value="*Aucune alerte.*")
 
         refresh_btn = gr.Button("Rafraichir", variant="secondary")
+        timer = gr.Timer(_POLL_INTERVAL_SECONDS)
+
+        outputs = [
+            activity_display,
+            sys_alerts,
+            progress_display,
+            benchmarks_display,
+            alerts_display,
+        ]
 
         def _refresh(target_dir_str):
             return _get_dashboard_data(target_dir_str)
 
-        refresh_btn.click(
-            fn=_refresh,
-            inputs=[target_dir_state],
-            outputs=[sys_alerts, progress_display, benchmarks_display, alerts_display],
-        )
+        refresh_btn.click(fn=_refresh, inputs=[target_dir_state], outputs=outputs)
+        timer.tick(fn=_refresh, inputs=[target_dir_state], outputs=outputs)
 
     return tab
 
 
-def _get_dashboard_data(target_dir_str: str) -> tuple[str, str, list, str]:
+def _get_dashboard_data(target_dir_str: str) -> tuple[str, str, str, list, str]:
     if not target_dir_str:
-        return "", "*Aucune session active.*", [], "*Aucune alerte.*"
+        return "*Aucune session active.*", "", "*Aucune session active.*", [], "*Aucune alerte.*"
 
     target_dir = Path(target_dir_str)
+
+    log_tail = read_log_tail(target_dir, "OPENCODE_LOG.txt", 200)
+    activity_text = summarize_logs(log_tail, cache_key=str(target_dir))
 
     progress_md = read_state(target_dir, "PROGRESS.md")
     benches_md = read_state(target_dir, "BENCHMARKS.md")
@@ -89,6 +106,7 @@ def _get_dashboard_data(target_dir_str: str) -> tuple[str, str, list, str]:
     ) if alerts_list else "*Aucune alerte detectee.*"
 
     return (
+        activity_text,
         sys_alert_text,
         progress_text or "*En attente de la premiere iteration...*",
         benchmarks,

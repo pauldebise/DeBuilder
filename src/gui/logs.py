@@ -9,6 +9,7 @@ import gradio as gr
 
 from src.core.state import read_state
 from src.core.secrets import sanitize_text
+from src.utils.text import read_log_tail
 
 
 def build_logs_tab(target_dir_state: gr.State) -> gr.TabItem:
@@ -57,14 +58,8 @@ def _get_opencode_logs(target_dir_str: str) -> str:
     target_dir = _get_target(target_dir_str)
     if not target_dir:
         return "*Aucune session active.*"
-    log_file = target_dir / "OPENCODE_LOG.txt"
-    if not log_file.exists():
-        return "*Aucun log opencode pour le moment.*"
-    try:
-        lines = log_file.read_text().split("\n")
-        return "\n".join(lines[-200:])
-    except OSError:
-        return "*Impossible de lire les logs.*"
+    tail = read_log_tail(target_dir, "OPENCODE_LOG.txt", 200)
+    return tail or "*Aucun log opencode pour le moment.*"
 
 
 def _get_agent_logs(target_dir_str: str) -> str:
