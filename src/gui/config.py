@@ -283,6 +283,12 @@ def _start_session(
         ).resolve()
         python_bin = os.environ.get("DEBUILDER_PYTHON", "python3")
 
+        # Necessaire aussi dans le process Gradio lui-meme (pas
+        # seulement dans l'env du sous-processus agent_loop.sh) : c'est
+        # ce process qui genere le resume LLM du tableau de bord
+        # (cf. src/core/log_summarizer.py::_active_provider).
+        os.environ["DEBUILDER_MODEL"] = actual_model
+
         subprocess.Popen(
             ["bash", str(agent_script)],
             env={
