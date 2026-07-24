@@ -10,6 +10,7 @@ il reconstruit son contexte depuis les fichiers d'etat.
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -47,6 +48,12 @@ _OPENCODE_INACTIVITY_TIMEOUT_SECONDS = int(
 _OPENCODE_MAX_SECONDS = int(
     os.environ.get("DEBUILDER_OPENCODE_MAX_SECONDS", str(3 * 3600))
 )
+
+# Longueur max du fallback ecrit dans PROGRESS.md quand l'agent ne l'a
+# pas mis a jour lui-meme (cf. _update_state_files) : la sortie brute
+# complete est deja dans OPENCODE_LOG.txt, l'injecter en entier ferait
+# regonfler indefiniment le prompt des iterations suivantes.
+_MAX_FALLBACK_PROGRESS_CHARS = 4000
 
 
 def run_iteration(target_dir: Path) -> bool:
@@ -88,7 +95,7 @@ def run_iteration(target_dir: Path) -> bool:
             _log(f"[agent] {len(barrier_files)} barriere(s) detectee(s), mise en pause...")
             _handle_barriers(target_dir, barrier_files)
 
-        _update_state_files(target_dir, result, suggestions_md)
+        _update_state_files(target_dir, result, suggestions_md, progress_md)
     except Exception as exc:
         # Une iteration ne doit jamais tuer la boucle autonome : sur
         # un pod sans surveillance, un crash non rattrape ici arrete
@@ -193,6 +200,25 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
 
     model = os.environ.get("DEBUILDER_MODEL", "")
     bin_path = shutil.which("opencode") or "/usr/local/bin/opencode"
+
+    # Le prompt (AGENTS.md + PROGRESS.md + BENCHMARKS.md + ...) n'a
+    # pas de taille bornee et peut depasser ARG_MAX si on le passe
+    # directement en argument positionnel (execve leve alors
+    # `[Errno 7] Argument list too long`). On l'ecrit dans un fichier
+    # temporaire et on l'attache via --file : la taille des fichiers
+    # d'etat ne peut alors plus jamais faire planter l'appel.
+    prompt_file = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".md",
+        prefix="debuilder-prompt-",
+        delete=False,
+        encoding="utf-8",
+    )
+    try:
+        prompt_file.write(prompt)
+    finally:
+        prompt_file.close()
+
     # --auto : approuve automatiquement les permissions OpenCode.
     # Sans ce flag, une action necessitant confirmation bloque le
     # process en attente d'une reponse sur stdin, qui est ferme
@@ -203,7 +229,9 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
     # rien dans OPENCODE_LOG.txt jusqu'au timeout, ce qui rend le
     # diagnostic impossible a distance (cf. figements observes sur pod).
     cmd = [
-        bin_path, "run", prompt,
+        bin_path, "run",
+        "Suis les instructions du fichier joint.",
+        "--file", prompt_file.name,
         "--dir", str(target_dir),
         "--auto",
         "--print-logs",
@@ -222,6 +250,23 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
     log_file = target_dir / "OPENCODE_LOG.txt"
     _rotate_log_if_large(log_file)
 
+    try:
+        return _exec_opencode(cmd, env, target_dir, model, prompt, log_file)
+    finally:
+        try:
+            os.unlink(prompt_file.name)
+        except OSError:
+            pass
+
+
+def _exec_opencode(
+    cmd: list[str],
+    env: dict[str, str],
+    target_dir: Path,
+    model: str,
+    prompt: str,
+    log_file: Path,
+) -> subprocess.CompletedProcess:
     with open(log_file, "a") as lf:
         lf.write(f"\n=== Iteration {_timestamp()} ===\n")
         lf.write(f"Model: {model}\n")
@@ -332,6 +377,7 @@ def _update_state_files(
     target_dir: Path,
     result: subprocess.CompletedProcess,
     suggestions_md: str,
+    progress_before: str,
 ) -> None:
     if result.returncode != 0:
         stderr = result.stderr.strip() if result.stderr else ""
@@ -345,7 +391,18 @@ def _update_state_files(
             f"- **Solutions envisagees** : Verifier la cle API et la configuration d'OpenCode.\n",
         )
     elif result.stdout.strip():
-        update_progress(target_dir, result.stdout.strip())
+        # L'agent est deja instruit de mettre a jour PROGRESS.md
+        # lui-meme pendant la session OpenCode (consigne #4 du
+        # prompt). S'il l'a fait, ne pas ecraser son entree structuree
+        # avec le transcript brut (verbeux, --log-level DEBUG). On ne
+        # retombe sur un extrait de la sortie brute (tronque : le
+        # detail complet est deja dans OPENCODE_LOG.txt) que si
+        # PROGRESS.md n'a pas bouge, en garde-fou.
+        progress_after = read_state(target_dir, "PROGRESS.md")
+        if progress_after == progress_before:
+            update_progress(
+                target_dir, result.stdout.strip()[-_MAX_FALLBACK_PROGRESS_CHARS:]
+            )
 
     if suggestions_md.strip():
         clear_suggestions(target_dir)
