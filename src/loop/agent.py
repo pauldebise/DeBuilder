@@ -8,7 +8,9 @@ il reconstruit son contexte depuis les fichiers d'etat.
 """
 
 import os
+import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -26,6 +28,11 @@ from src.utils.text import strip_ansi
 # surveillance (pod distant) ne doit pas remplir le disque au fil
 # des iterations.
 _MAX_LOG_BYTES = 5 * 1024 * 1024
+
+# Duree max d'une iteration OpenCode. Sur un pod sans surveillance,
+# un blocage (ex: attente d'une confirmation interactive) ne doit
+# jamais figer la boucle indefiniment.
+_OPENCODE_TIMEOUT_SECONDS = 600
 
 
 def run_iteration(target_dir: Path) -> bool:
@@ -75,7 +82,8 @@ def run_iteration(target_dir: Path) -> bool:
         _log(f"[agent] ERREUR inattendue pendant l'iteration : {exc}")
         _record_iteration_exception(target_dir, exc)
 
-    stage_and_commit_all(target_dir, f"iteration {_timestamp()}")
+    if not stage_and_commit_all(target_dir, f"iteration {_timestamp()}"):
+        _log("[agent] ATTENTION: echec du commit/push automatique de fin d'iteration.")
 
     return not is_done(target_dir)
 
@@ -160,7 +168,12 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
 
     model = os.environ.get("DEBUILDER_MODEL", "")
     bin_path = shutil.which("opencode") or "/usr/local/bin/opencode"
-    cmd = [bin_path, "run", prompt, "--dir", str(target_dir)]
+    # --auto : approuve automatiquement les permissions OpenCode.
+    # Sans ce flag, une action necessitant confirmation bloque le
+    # process en attente d'une reponse sur stdin, qui est ferme
+    # (DEVNULL) puisque la boucle tourne sans surveillance. Conforme
+    # a l'exigence d'autonomie/non-blocage du cahier des charges.
+    cmd = [bin_path, "run", prompt, "--dir", str(target_dir), "--auto"]
     if model:
         cmd.extend(["--model", model])
 
@@ -173,21 +186,41 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
 
     log_file = target_dir / "OPENCODE_LOG.txt"
     _rotate_log_if_large(log_file)
-    try:
-        with open(log_file, "a") as lf:
-            lf.write(f"\n=== Iteration {_timestamp()} ===\n")
-            lf.write(f"Model: {model}\n")
-            lf.write(f"Prompt length: {len(prompt)} chars\n\n")
 
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(target_dir),
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
+    with open(log_file, "a") as lf:
+        lf.write(f"\n=== Iteration {_timestamp()} ===\n")
+        lf.write(f"Model: {model}\n")
+        lf.write(f"Prompt length: {len(prompt)} chars\n\n")
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(target_dir),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+
+        # proc.wait(timeout=...) seul ne suffit pas : si OpenCode ne
+        # produit plus aucune sortie (bloque en attente d'une
+        # confirmation qu'il ne recevra jamais), la boucle de lecture
+        # ci-dessous reste figee indefiniment et le wait() n'est
+        # jamais atteint. Ce minuteur tue le groupe de processus au
+        # bout de _OPENCODE_TIMEOUT_SECONDS quoi qu'il arrive.
+        timed_out = threading.Event()
+
+        def _kill_on_timeout() -> None:
+            timed_out.set()
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        timer = threading.Timer(_OPENCODE_TIMEOUT_SECONDS, _kill_on_timeout)
+        timer.start()
+        try:
             stdout_lines: list[str] = []
             for line in proc.stdout:
                 # Sanitization au point de capture : cette meme sortie
@@ -197,23 +230,24 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
                 stdout_lines.append(clean)
                 lf.write(clean)
                 lf.flush()
-            proc.wait(timeout=600)
+            proc.wait()
+        finally:
+            timer.cancel()
 
-            stdout_text = "".join(stdout_lines)
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=proc.returncode,
-                stdout=stdout_text,
-                stderr="",
-            )
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    stdout_text = "".join(stdout_lines)
+    if timed_out.is_set():
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=-1,
-            stdout="",
-            stderr="Timeout apres 600s",
+            stdout=stdout_text,
+            stderr=f"Timeout apres {_OPENCODE_TIMEOUT_SECONDS}s (processus tue)",
         )
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=proc.returncode,
+        stdout=stdout_text,
+        stderr="",
+    )
 
 
 def _rotate_log_if_large(log_file: Path, max_bytes: int = _MAX_LOG_BYTES) -> None:
