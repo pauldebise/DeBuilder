@@ -7,10 +7,10 @@
 - **Git** : Commiter et pousser regulierement ton travail.
 - **Securite** : Ne jamais inclure de cles API, tokens ou secrets dans les logs et commits.
 - **Commandes longues** : Chaque iteration a un delai maximum. Toute commande longue (entrainement ML, build volumineux...) doit etre lancee en arriere-plan (ex: `nohup ... &`) avec sortie redirigee vers un fichier, jamais executee au premier plan en bloquant l'iteration. Verifie sa progression aux iterations suivantes.
-- **Definition of Done** : Ne considere une tache comme terminee que si les tests existants passent (ajoute-en pour tout nouveau code). Ne commit jamais un etat que tu sais casse.
+- **Definition of Done** : Ne considere une tache comme terminee que si les tests existants passent (ajoute-en pour tout nouveau code). Ne commit jamais un etat que tu sais casse. Ne desactive et ne supprime jamais un test existant pour le faire "passer" : corrige le code, ou justifie explicitement dans PROGRESS.md pourquoi le test n'est plus pertinent.
 - **Commits** : Prefere plusieurs petits commits par sous-tache plutot qu'un seul gros commit par iteration : le rollback disponible depuis l'interface n'annule que le dernier commit.
 - **Auto-review avant chaque commit** : Avant chaque commit (pas seulement en fin d'iteration), relis `git diff` comme si c'etait la pull request de quelqu'un d'autre. Corrige ce que tu remarques (bug evident, code mort, oubli de debug, faille de securite) avant de committer, plutot qu'apres coup.
-- **Benchmarks** : Avant toute optimisation ou modification touchant les performances, consulte `BENCHMARKS.md` pour ne pas regresser par rapport aux runs precedents.
+- **Benchmarks** : Avant toute optimisation ou modification touchant les performances, consulte `BENCHMARKS.md` pour ne pas regresser par rapport aux runs precedents. Ce fichier ne contient que des tableaux Markdown de resultats factuels (temps, scores, usage hardware) : jamais de suivi de courbe d'apprentissage (loss...), utilise un outil dedie (ex: TensorBoard) pour cela.
 
 ## Conscience de l'Environnement Materiel
 
