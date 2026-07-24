@@ -26,6 +26,8 @@ STATE_FILES = [
 _PROGRESS_SEPARATOR = "\n## Prochaine Sous-Tache Prevue\n"
 _ITERATION_HEADER_RE = re.compile(r"^## (.+)$", re.MULTILINE)
 
+_TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "templates"
+
 
 def init_project_state(
     target_dir: Path,
@@ -202,41 +204,14 @@ def _touch(filepath: Path) -> None:
 def _render_agents_template(instructions: str, hardware_info: str) -> str:
     if not hardware_info:
         hardware_info = "Non audite."
-    return f"""# Objectifs du Projet
-
-{instructions}
-
-## Regles Generales
-- **Architecture & Code** : Respecter les standards et bonnes pratiques.
-- **Git** : Commiter et pousser regulierement ton travail.
-- **Securite** : Ne jamais inclure de cles API, tokens ou secrets dans les logs et commits.
-
-## Conscience de l'Environnement Materiel
-
-{hardware_info}
-
-Tu dois adapter tes decisions d'implementation a ces ressources.
-"""
+    template = (_TEMPLATES_DIR / "AGENTS.md.tmpl").read_text(encoding="utf-8")
+    return template.replace("{{ instructions }}", instructions).replace(
+        "{{ hardware_info }}", hardware_info
+    )
 
 
 def _render_progress_template() -> str:
-    return """# Journal de Progression
-
-## Derniere Iteration (N)
-- **Action realisee** : 
-- **Resultat** : 
-- **Problemes rencontres** : 
-- **Solutions envisagees** : 
-
-## Iteration Precedente (N-1)
-- **Action realisee** : 
-- **Resultat** : 
-- **Problemes rencontres** : 
-- **Solutions envisagees** : 
-
-## Prochaine Sous-Tache Prevue
-
-"""
+    return (_TEMPLATES_DIR / "PROGRESS.md.tmpl").read_text(encoding="utf-8")
 
 
 def _parse_iterations(lines: list[str]) -> list[str]:
