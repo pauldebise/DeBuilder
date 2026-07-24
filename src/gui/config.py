@@ -276,7 +276,12 @@ def _start_session(
             hardware_info=hw_text,
         )
         msg += "Fichiers d'etat crees.\n\n"
-        msg += "### Materiel detecte\n\n" + hw_text + "\n\n"
+        msg += (
+            "### Materiel detecte (environnement de developpement de l'agent, "
+            "pas necessairement la cible de deploiement finale)\n\n"
+            + hw_text
+            + "\n\n"
+        )
 
         agent_script = (
             Path(__file__).parent.parent / "loop" / "agent_loop.sh"
