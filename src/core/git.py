@@ -49,13 +49,22 @@ def commit_all(repo_dir: Path, message: str) -> bool:
 def push(repo_dir: Path) -> bool:
     """Push les commits sur le remote.
 
+    Definit systematiquement l'upstream (-u) : sur un depot flambant
+    neuf (init_repo + premier commit), la branche locale n'a encore
+    aucun suivi distant et un `git push` nu echoue silencieusement
+    avec "no upstream branch".
+
     Args:
         repo_dir: Chemin du depot Git cible.
 
     Returns:
         True si le push a reussi, False sinon.
     """
-    result = _run(repo_dir, "push")
+    branch_result = _run(repo_dir, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = branch_result.stdout.strip()
+    if not branch or branch == "HEAD":
+        return False
+    result = _run(repo_dir, "push", "-u", "origin", branch)
     return result.returncode == 0
 
 
@@ -64,6 +73,12 @@ def stage_and_commit_all(repo_dir: Path, message: str) -> bool:
 
     Utilise par l'agent apres chaque iteration pour garantir
     la persistance du travail meme en cas d'echec.
+
+    Le push est tente meme quand il n'y a rien de nouveau a commiter
+    ici : l'agent (via OpenCode) commite frequemment lui-meme pendant
+    l'iteration, ce qui ne laisse alors plus rien a commiter pour ce
+    wrapper. Sans ce push inconditionnel, ces commits resteraient
+    indefiniment locaux et ne remonteraient jamais sur GitHub.
 
     Args:
         repo_dir: Chemin du depot Git cible.
@@ -77,17 +92,14 @@ def stage_and_commit_all(repo_dir: Path, message: str) -> bool:
         return False
 
     diff_result = _run(repo_dir, "diff", "--cached", "--quiet")
-    if diff_result.returncode == 0:
-        return True
-
-    commit_result = _run(repo_dir, "commit", "-m", message)
-    if commit_result.returncode != 0:
-        return False
+    if diff_result.returncode != 0:
+        commit_result = _run(repo_dir, "commit", "-m", message)
+        if commit_result.returncode != 0:
+            return False
 
     remote_result = _run(repo_dir, "remote")
     if remote_result.stdout.strip():
-        push_result = _run(repo_dir, "push")
-        return push_result.returncode == 0
+        return push(repo_dir)
     return True
 
 
