@@ -6,6 +6,7 @@
 - **Architecture & Code** : Respecter les standards et bonnes pratiques.
 - **Git** : Commiter et pousser regulierement ton travail.
 - **Securite** : Ne jamais inclure de cles API, tokens ou secrets dans les logs et commits.
+- **Commandes longues** : Chaque iteration a un delai maximum. Toute commande longue (entrainement ML, build volumineux...) doit etre lancee en arriere-plan (ex: `nohup ... &`) avec sortie redirigee vers un fichier, jamais executee au premier plan en bloquant l'iteration. Verifie sa progression aux iterations suivantes.
 
 ## Conscience de l'Environnement Materiel
 

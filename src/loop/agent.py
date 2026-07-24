@@ -29,10 +29,24 @@ from src.utils.text import strip_ansi
 # des iterations.
 _MAX_LOG_BYTES = 5 * 1024 * 1024
 
-# Duree max d'une iteration OpenCode. Sur un pod sans surveillance,
-# un blocage (ex: attente d'une confirmation interactive) ne doit
-# jamais figer la boucle indefiniment.
-_OPENCODE_TIMEOUT_SECONDS = 600
+# Duree max SANS NOUVELLE SORTIE d'OpenCode. Sur un pod sans
+# surveillance, un blocage (ex: attente d'une confirmation
+# interactive qu'il ne recevra jamais) ne doit jamais figer la boucle
+# indefiniment. Base sur l'inactivite (et non la duree totale) pour
+# ne pas tuer une iteration qui avance encore dans sa liste de taches.
+# L'agent est instruit (cf. _build_prompt) de lancer les commandes
+# longues (entrainement ML...) en arriere-plan plutot que de bloquer
+# ici, mais ces valeurs restent surchargeables au cas ou.
+_OPENCODE_INACTIVITY_TIMEOUT_SECONDS = int(
+    os.environ.get("DEBUILDER_OPENCODE_INACTIVITY_TIMEOUT", "600")
+)
+
+# Garde-fou absolu : meme si OpenCode continue de produire de la
+# sortie, une iteration ne doit pas tourner indefiniment (ex: boucle
+# de retry qui log en continu sans jamais converger).
+_OPENCODE_MAX_SECONDS = int(
+    os.environ.get("DEBUILDER_OPENCODE_MAX_SECONDS", str(3 * 3600))
+)
 
 
 def run_iteration(target_dir: Path) -> bool:
@@ -161,7 +175,14 @@ def _build_prompt(
         "ont ete collectees (temps, scores, utilisation hardware).\n"
         "7. Ne JAMAIS inclure de cles API ou secrets dans les logs/commits.\n"
         "8. Si une ressource te manque, trouve une solution de contournement "
-        "et ne bloque jamais. Signale le besoin dans RESOURCES_NEEDED.md."
+        "et ne bloque jamais. Signale le besoin dans RESOURCES_NEEDED.md.\n"
+        "9. Pour toute commande longue (entrainement ML, build volumineux, "
+        "telechargement de dataset...) : lance-la en arriere-plan "
+        "(ex: `nohup ... > train.log 2>&1 &`) et redonne la main immediatement. "
+        "Ne bloque JAMAIS cet appel en attendant sa fin : cette iteration a "
+        "un delai maximum, et le processus serait tue avant la fin de "
+        "l'entrainement. Verifie et rapporte sa progression (via son fichier "
+        "de log ou TensorBoard) aux iterations suivantes."
     )
 
     return "\n\n".join(parts)
@@ -221,22 +242,33 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
         # produit plus aucune sortie (bloque en attente d'une
         # confirmation qu'il ne recevra jamais), la boucle de lecture
         # ci-dessous reste figee indefiniment et le wait() n'est
-        # jamais atteint. Ce minuteur tue le groupe de processus au
-        # bout de _OPENCODE_TIMEOUT_SECONDS quoi qu'il arrive.
+        # jamais atteint. Ce watchdog tue le groupe de processus s'il
+        # reste silencieux trop longtemps, ou au bout d'une duree
+        # totale absolue, mais laisse tourner une iteration active
+        # (qui continue de produire de la sortie).
         timed_out = threading.Event()
+        stopped = threading.Event()
+        activity = {"last_output": time.monotonic(), "start": time.monotonic()}
 
-        def _kill_on_timeout() -> None:
-            timed_out.set()
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        def _watchdog() -> None:
+            while not stopped.wait(1):
+                now = time.monotonic()
+                idle = now - activity["last_output"]
+                elapsed = now - activity["start"]
+                if idle >= _OPENCODE_INACTIVITY_TIMEOUT_SECONDS or elapsed >= _OPENCODE_MAX_SECONDS:
+                    timed_out.set()
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    return
 
-        timer = threading.Timer(_OPENCODE_TIMEOUT_SECONDS, _kill_on_timeout)
-        timer.start()
+        watchdog = threading.Thread(target=_watchdog, daemon=True)
+        watchdog.start()
         try:
             stdout_lines: list[str] = []
             for line in proc.stdout:
+                activity["last_output"] = time.monotonic()
                 # Sanitization au point de capture : cette meme sortie
                 # est ensuite injectee dans PROGRESS.md et commitee sur
                 # le depot cible (potentiellement pushee sur GitHub).
@@ -246,7 +278,7 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
                 lf.flush()
             proc.wait()
         finally:
-            timer.cancel()
+            stopped.set()
 
     stdout_text = "".join(stdout_lines)
     if timed_out.is_set():
@@ -254,7 +286,11 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
             args=cmd,
             returncode=-1,
             stdout=stdout_text,
-            stderr=f"Timeout apres {_OPENCODE_TIMEOUT_SECONDS}s (processus tue)",
+            stderr=(
+                f"Timeout : aucune sortie pendant "
+                f"{_OPENCODE_INACTIVITY_TIMEOUT_SECONDS}s, ou duree totale "
+                f"depassant {_OPENCODE_MAX_SECONDS}s (processus tue)"
+            ),
         )
     return subprocess.CompletedProcess(
         args=cmd,
