@@ -95,6 +95,7 @@ def parse_alerts(content: str) -> list[dict[str, str]]:
                 "keyword": keyword,
                 "line": line,
                 "context": context,
+                "position": match.start(),
             })
     return alerts
 

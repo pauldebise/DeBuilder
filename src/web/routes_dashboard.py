@@ -18,6 +18,8 @@ from src.utils.text import read_log_tail
 
 router = APIRouter()
 
+_MAX_DASHBOARD_ALERTS = 2
+
 _NO_SESSION_DASHBOARD = {
     "activity_text": "*Aucune session active.*",
     "system_alerts": "",
@@ -88,10 +90,15 @@ def _get_dashboard_data(target_dir: Path) -> dict:
 
     benchmarks = parse_benchmarks(benches_md)
 
-    alerts_list = parse_alerts(progress_md)
+    # Ne garder que les alertes les plus recentes : sur une session
+    # longue, parse_alerts() renvoie une entree par occurrence de
+    # mot-cle dans tout PROGRESS.md, ce qui gonfle l'encadre de facon
+    # disproportionnee au fil des iterations.
+    alerts_list = sorted(parse_alerts(progress_md), key=lambda a: a["position"])
+    recent_alerts = alerts_list[-_MAX_DASHBOARD_ALERTS:]
     alerts_text = (
-        "\n".join(f"- **{a['keyword']}** : {a['line']}" for a in alerts_list)
-        if alerts_list
+        "\n".join(f"- **{a['keyword']}** : {a['line']}" for a in recent_alerts)
+        if recent_alerts
         else "*Aucune alerte detectee.*"
     )
 
