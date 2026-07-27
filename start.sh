@@ -49,10 +49,10 @@ if ! ${PYTHON_BIN} -m pip --version &>/dev/null; then
     ${PYTHON_BIN} -m ensurepip --upgrade 2>/dev/null || true
 fi
 
-if ! ${PYTHON_BIN} -c "import fastapi, uvicorn" 2>/dev/null; then
-    echo "[DeBuilder] FastAPI/uvicorn non installes. Installation..." >&2
-    ${PYTHON_BIN} -m pip install fastapi uvicorn --break-system-packages 2>/dev/null || \
-        ${PYTHON_BIN} -m pip install fastapi uvicorn
+if ! ${PYTHON_BIN} -c "import fastapi, uvicorn, yaml, httpx" 2>/dev/null; then
+    echo "[DeBuilder] Dependances Python manquantes. Installation..." >&2
+    ${PYTHON_BIN} -m pip install -r "${SCRIPT_DIR}/requirements.txt" --break-system-packages 2>/dev/null || \
+        ${PYTHON_BIN} -m pip install -r "${SCRIPT_DIR}/requirements.txt"
 fi
 
 if ! command -v opencode &>/dev/null && [ ! -x /usr/local/bin/opencode ]; then
