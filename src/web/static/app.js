@@ -152,7 +152,6 @@ async function refreshDashboard() {
   const data = await resp.json();
 
   renderMarkdownInto("activity-text", data.activity_text);
-  renderMarkdownInto("progress-summary", data.progress_text);
   setAlertBanner("system-alerts", data.system_alerts);
   setAlertBanner("watchdog-alerts", hasRealAlert(data.alerts_text) ? data.alerts_text : "");
   renderBenchmarksSummary(data.benchmarks);
