@@ -13,7 +13,9 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from src.web.routes_control import router as control_router
 from src.web.routes_dashboard import router as dashboard_router
+from src.web.routes_requests import router as requests_router
 from src.web.routes_session import router as session_router
 
 PORT = int(os.environ.get("DEBUILDER_PORT", "7680"))
@@ -25,6 +27,8 @@ app = FastAPI(title=TITLE)
 
 app.include_router(session_router)
 app.include_router(dashboard_router)
+app.include_router(control_router)
+app.include_router(requests_router)
 
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
