@@ -1,9 +1,15 @@
 """Tests pour le module agent.py."""
 
+import json
 import subprocess
 from pathlib import Path
 
-from src.loop.agent import _build_prompt, _rotate_log_if_large, run_iteration
+from src.loop.agent import (
+    _build_prompt,
+    _rotate_log_if_large,
+    _web_tools_env,
+    run_iteration,
+)
 from src.core.state import init_project_state, is_done, read_state, touch_done, write_state
 
 
@@ -54,6 +60,58 @@ def test_build_prompt_with_resources():
     )
     assert "GPU A100" in prompt
     assert "Ressources disponibles" in prompt
+
+
+def test_build_prompt_mentions_web_research():
+    prompt = _build_prompt(
+        agents_md="# Objectif",
+        progress_md="",
+        benchmarks_md="",
+        suggestions_md="",
+        resources_md="",
+    )
+    assert "websearch" in prompt
+    assert "webfetch" in prompt
+
+
+def test_web_tools_env_enables_search_backend_and_permissions():
+    env = _web_tools_env({})
+
+    assert env["OPENCODE_ENABLE_EXA"] == "1"
+    config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+    assert config["permission"] == {"webfetch": "allow", "websearch": "allow"}
+
+
+def test_web_tools_env_respects_user_backend_choice():
+    env = _web_tools_env({"OPENCODE_WEBSEARCH_PROVIDER": "parallel"})
+
+    assert "OPENCODE_ENABLE_EXA" not in env
+    assert "OPENCODE_CONFIG_CONTENT" in env
+
+
+def test_web_tools_env_merges_existing_inline_config():
+    existing = json.dumps(
+        {"model": "deepseek/deepseek-v4-pro", "permission": {"websearch": "deny"}}
+    )
+
+    env = _web_tools_env({"OPENCODE_CONFIG_CONTENT": existing})
+
+    config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+    assert config["model"] == "deepseek/deepseek-v4-pro"
+    # Un reglage explicite de l'utilisateur n'est pas ecrase.
+    assert config["permission"]["websearch"] == "deny"
+    assert config["permission"]["webfetch"] == "allow"
+
+
+def test_web_tools_env_keeps_invalid_inline_config_untouched():
+    env = _web_tools_env({"OPENCODE_CONFIG_CONTENT": "{pas du json"})
+
+    assert "OPENCODE_CONFIG_CONTENT" not in env
+    assert env["OPENCODE_ENABLE_EXA"] == "1"
+
+
+def test_web_tools_env_can_be_disabled():
+    assert _web_tools_env({"DEBUILDER_WEB_TOOLS": "0"}) == {}
 
 
 def test_run_iteration_stops_on_done(tmp_path, monkeypatch):

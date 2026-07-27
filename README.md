@@ -23,6 +23,7 @@ L'agent tourne en boucle, itération après itération, sans mémoire de context
 - **Autonomie complète** : l'agent commit et pousse son travail à chaque itération, uniquement sur le dépôt du projet cible. Il ne bloque jamais en attendant une réponse humaine — s'il lui manque une ressource, il applique une solution de contournement et le signale.
 - **Communication par fichiers** : GUI et boucle agent ne communiquent jamais directement en mémoire. Tout passe par le système de fichiers (`AGENTS.md`, `PROGRESS.md`, `BENCHMARKS.md`, ...), protégé par du file locking pour éviter toute corruption entre l'écriture de l'agent et le polling de l'interface.
 - **Conscience matérielle** : au démarrage d'une session, DeBuilder audite la machine hôte (CPU, RAM, GPU) et transmet ces informations à l'agent, qui adapte ses décisions d'implémentation en conséquence (ex : entraîner un modèle si un GPU est disponible).
+- **Veille en ligne** : les outils web d'OpenCode (`websearch`, `webfetch`) sont activés pour l'agent, qui doit vérifier en ligne les informations externes susceptibles d'avoir changé (documentation et signatures d'API, versions de paquets, bonnes pratiques, datasets et modèles disponibles) plutôt que de se fier à ses seules connaissances d'entraînement.
 
 ## Architecture
 
@@ -113,6 +114,16 @@ Ces fichiers sont créés dans le répertoire du projet cible (jamais dans celui
 | `DEBUILDER_STATE_DIR` | `~/.debuilder` | Répertoire de persistance de la session active (hors dépôts Git). |
 | `DEBUILDER_OPENCODE_INACTIVITY_TIMEOUT` | `600` (10 min) | Délai max sans nouvelle sortie d'OpenCode avant de tuer l'itération (processus réellement bloqué). |
 | `DEBUILDER_OPENCODE_MAX_SECONDS` | `10800` (3h) | Plafond absolu de durée d'une itération, même si OpenCode continue de produire de la sortie. |
+| `DEBUILDER_WEB_TOOLS` | `1` | Accès internet de l'agent (`websearch` + `webfetch`). Mettre à `0` pour le couper entièrement. |
+
+### Recherche en ligne
+
+À chaque itération, la boucle agent injecte dans l'environnement d'OpenCode :
+
+- `OPENCODE_ENABLE_EXA=1` : OpenCode n'expose l'outil `websearch` que si le modèle vient du fournisseur `opencode` (Zen) ou si un backend de recherche est activé. DeBuilder tournant avec DeepSeek / OpenAI / Anthropic, l'outil serait sinon absent de la liste présentée au modèle. Le backend Exa est un service MCP hébergé qui ne demande aucune clé API. Un réglage explicite de l'utilisateur (`OPENCODE_WEBSEARCH_PROVIDER`, `OPENCODE_ENABLE_PARALLEL`, ...) est respecté et n'est jamais écrasé.
+- `OPENCODE_CONFIG_CONTENT` : config inline accordant les permissions `webfetch` et `websearch`. Ce canal (priorité la plus haute dans l'ordre de fusion d'OpenCode) évite d'écrire un `opencode.json` dans le dépôt du projet cible — l'isolation entre les deux dépôts est préservée — et garantit l'accès web même si un `deny` traîne dans la configuration du projet cible. Une valeur déjà présente est fusionnée, pas remplacée.
+
+L'outil `webfetch` est disponible dans OpenCode quel que soit le fournisseur : seule sa permission a besoin d'être accordée.
 
 Les clés API des fournisseurs (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) sont saisies depuis l'onglet Configuration et injectées comme variables d'environnement éphémères : **elles ne sont jamais écrites sur disque.**
 
@@ -120,6 +131,7 @@ Les clés API des fournisseurs (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC
 
 - Toute sortie affichée dans la GUI ou écrite dans les logs/commits passe par `sanitize_text()`, qui masque les valeurs de toute variable d'environnement dont le nom contient `KEY`, `SECRET`, `TOKEN`, `PASSWORD` ou `API`.
 - Les fichiers opérationnels de DeBuilder (`DONE`, `BARRIER_*`, `*.lock`, `OPENCODE_LOG.txt`) sont exclus des commits sur le dépôt du projet cible.
+- L'accès internet de l'agent sort de la machine : les requêtes `websearch` transitent par le service hébergé Exa et `webfetch` contacte directement les URL demandées. L'agent est explicitement instruit de ne jamais placer de secret ni de code propriétaire du projet dans une requête. Sur un projet sensible, couper l'accès avec `DEBUILDER_WEB_TOOLS=0`.
 - L'agent n'a jamais accès en lecture ou écriture au dépôt Git de DeBuilder lui-même ; toutes les opérations Git de la boucle agent (`commit`, `push`, `rollback`) ciblent exclusivement le répertoire du projet.
 
 ## Développement

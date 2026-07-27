@@ -7,6 +7,7 @@ L'agent n'a aucune memoire interne entre deux iterations:
 il reconstruit son contexte depuis les fichiers d'etat.
 """
 
+import json
 import os
 import signal
 import subprocess
@@ -54,6 +55,25 @@ _OPENCODE_MAX_SECONDS = int(
 # complete est deja dans OPENCODE_LOG.txt, l'injecter en entier ferait
 # regonfler indefiniment le prompt des iterations suivantes.
 _MAX_FALLBACK_PROGRESS_CHARS = 4000
+
+# OpenCode n'expose l'outil `websearch` que si le fournisseur du modele
+# est `opencode` (Zen), ou si un backend de recherche est active par
+# variable d'environnement. DeBuilder tournant avec DeepSeek / OpenAI /
+# Anthropic, l'outil serait purement absent de la liste presentee au
+# modele sans ce reglage. On active donc le backend Exa (service MCP
+# heberge, aucune cle API requise) pour que l'agent puisse s'informer
+# des pratiques, ressources et documentations a jour.
+# L'outil `webfetch`, lui, est toujours disponible : seule sa
+# permission doit etre accordee (cf. _merge_config_content).
+_WEBSEARCH_BACKEND_VARS = (
+    "OPENCODE_WEBSEARCH_PROVIDER",
+    "OPENCODE_ENABLE_EXA",
+    "OPENCODE_ENABLE_PARALLEL",
+    "OPENCODE_EXPERIMENTAL_EXA",
+    "OPENCODE_EXPERIMENTAL_PARALLEL",
+)
+
+_FALSY = {"0", "false", "no", "off"}
 
 
 def run_iteration(target_dir: Path) -> bool:
@@ -196,7 +216,21 @@ def _build_prompt(
         "Ne bloque JAMAIS cet appel en attendant sa fin : cette iteration a "
         "un delai maximum, et le processus serait tue avant la fin de "
         "l'entrainement. Verifie et rapporte sa progression (via son fichier "
-        "de log ou TensorBoard) aux iterations suivantes."
+        "de log ou TensorBoard) aux iterations suivantes.\n"
+        "10. Tu as un acces internet via les outils `websearch` "
+        "(rechercher) et `webfetch` (lire une URL). Utilise-les des que "
+        "ta decision depend d'une information externe susceptible "
+        "d'avoir change : documentation ou signature d'API d'une "
+        "bibliotheque, version courante d'un paquet, bonne pratique de "
+        "l'ecosysteme, dataset ou modele pre-entraine disponible, "
+        "message d'erreur inconnu. Ne devine jamais une API ou une "
+        "version : verifie-la. Privilegie les sources officielles "
+        "(documentation, depot du projet, notes de version), et cite "
+        "l'URL dans PROGRESS.md quand une decision s'appuie dessus. "
+        "N'inclus jamais de secret ni de code proprietaire du projet "
+        "dans une requete. Si la recherche echoue (reseau indisponible, "
+        "outil absent), poursuis avec tes connaissances, signale-le "
+        "dans PROGRESS.md et ne bloque pas."
     )
 
     return "\n\n".join(parts)
@@ -253,6 +287,7 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
     # sans cette correction, il travaillerait dans le repertoire
     # de DeBuilder (celui de la boucle) au lieu du projet cible.
     env = {**os.environ, "PWD": str(target_dir)}
+    env.update(_web_tools_env(env))
 
     _log(f"[agent] opencode run --model {model or '(default)'} [...]")
 
@@ -266,6 +301,91 @@ def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
             os.unlink(prompt_file.name)
         except OSError:
             pass
+
+
+def _web_tools_env(base_env: dict[str, str]) -> dict[str, str]:
+    """Calcule les variables d'env activant la recherche en ligne.
+
+    L'agent tourne sans supervision : pour ne pas rester sur des
+    connaissances figees (API obsoletes, versions de paquets,
+    ressources disponibles), il doit pouvoir consulter le web via les
+    outils `websearch` et `webfetch` d'OpenCode.
+
+    Args:
+        base_env: Environnement de depart (typiquement ``os.environ``
+            enrichi), utilise pour respecter un reglage deja pose par
+            l'utilisateur.
+
+    Returns:
+        Les variables a surcharger dans l'env du sous-processus
+        OpenCode (dictionnaire vide si l'utilisateur a desactive la
+        fonctionnalite via ``DEBUILDER_WEB_TOOLS=0``).
+    """
+    if base_env.get("DEBUILDER_WEB_TOOLS", "1").strip().lower() in _FALSY:
+        return {}
+
+    overrides: dict[str, str] = {}
+
+    # Un backend explicitement choisi par l'utilisateur (Exa, Parallel,
+    # cle API dediee...) prime : ne rien imposer dans ce cas.
+    if not any(base_env.get(var, "").strip() for var in _WEBSEARCH_BACKEND_VARS):
+        overrides["OPENCODE_ENABLE_EXA"] = "1"
+
+    config_content = _merge_config_content(base_env.get("OPENCODE_CONFIG_CONTENT", ""))
+    if config_content is not None:
+        overrides["OPENCODE_CONFIG_CONTENT"] = config_content
+
+    return overrides
+
+
+def _merge_config_content(existing: str) -> str | None:
+    """Accorde les permissions webfetch/websearch a OpenCode.
+
+    Passe par ``OPENCODE_CONFIG_CONTENT`` (config inline, priorite la
+    plus haute dans l'ordre de fusion d'OpenCode) plutot que par un
+    `opencode.json` ecrit dans le projet cible : la configuration reste
+    ainsi propre a DeBuilder, sans polluer ni le depot cible ni la
+    config globale de la machine.
+
+    `--auto` approuve deja les permissions non explicitement refusees,
+    mais un `deny` present dans la config du projet cible (que l'agent
+    peut lui-meme y ecrire par erreur) couperait l'acces au web sans
+    cette surcharge.
+
+    Args:
+        existing: Valeur actuelle de ``OPENCODE_CONFIG_CONTENT``.
+
+    Returns:
+        Le JSON fusionne, ou None s'il ne faut pas toucher a la valeur
+        existante (JSON invalide : l'ecraser ferait perdre la config
+        posee par l'utilisateur).
+    """
+    config: dict = {}
+    if existing.strip():
+        try:
+            parsed = json.loads(existing)
+        except json.JSONDecodeError:
+            _log(
+                "[agent] OPENCODE_CONFIG_CONTENT n'est pas un JSON valide : "
+                "permissions web laissees en l'etat."
+            )
+            return None
+        if not isinstance(parsed, dict):
+            _log(
+                "[agent] OPENCODE_CONFIG_CONTENT n'est pas un objet JSON : "
+                "permissions web laissees en l'etat."
+            )
+            return None
+        config = parsed
+
+    permission = config.get("permission")
+    if not isinstance(permission, dict):
+        permission = {}
+    for tool in ("webfetch", "websearch"):
+        permission.setdefault(tool, "allow")
+    config["permission"] = permission
+
+    return json.dumps(config)
 
 
 def _exec_opencode(
