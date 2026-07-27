@@ -7,8 +7,37 @@ from fastapi.testclient import TestClient
 import src.web.routes_session as routes_session
 from src.core.session import save_last_session
 from src.web.app import app
+from src.web.routes_session import PROVIDERS, _normalize_model
 
 client = TestClient(app)
+
+
+def test_normalize_model_adds_provider_prefix():
+    cfg = PROVIDERS["DeepSeek"]
+    assert _normalize_model("deepseek-v4-pro", cfg) == "deepseek/deepseek-v4-pro"
+
+
+def test_normalize_model_keeps_full_name():
+    cfg = PROVIDERS["DeepSeek"]
+    assert _normalize_model("deepseek/deepseek-chat", cfg) == "deepseek/deepseek-chat"
+
+
+def test_normalize_model_empty_falls_back_to_default():
+    cfg = PROVIDERS["Anthropic"]
+    assert _normalize_model("", cfg) == cfg["default_model"]
+    assert "/" in _normalize_model("", cfg)
+
+
+def test_normalize_model_custom_provider_no_prefix():
+    cfg = PROVIDERS["Autre (custom)"]
+    assert _normalize_model("", cfg) == ""
+    assert _normalize_model("monprovider/mon-modele", cfg) == "monprovider/mon-modele"
+
+
+def test_default_models_are_provider_qualified():
+    for name, cfg in PROVIDERS.items():
+        if cfg["default_model"]:
+            assert "/" in cfg["default_model"], name
 
 
 def test_get_session_returns_null_when_no_active_session(tmp_path: Path, monkeypatch):

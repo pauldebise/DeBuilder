@@ -1,6 +1,6 @@
 # DeBuilder
 
-**DeBuilder** est un wrapper local pour [OpenCode](https://opencode.ai), conçu pour des travaux de développement et de machine learning. Il orchestre un agent d'IA autonome qui travaille en arrière-plan sur un projet cible, tout en exposant une interface web (Gradio) pour le superviser et intervenir de manière asynchrone.
+**DeBuilder** est un wrapper local pour [OpenCode](https://opencode.ai), conçu pour des travaux de développement et de machine learning. Il orchestre un agent d'IA autonome qui travaille en arrière-plan sur un projet cible, tout en exposant une interface web (FastAPI + HTML/JS vanilla) pour le superviser et intervenir de manière asynchrone.
 
 L'agent tourne en boucle, itération après itération, sans mémoire de contexte interne : toute la continuité de son travail passe par des fichiers d'état Markdown lus et écrits dans le dépôt du projet cible.
 
@@ -19,7 +19,7 @@ L'agent tourne en boucle, itération après itération, sans mémoire de context
 
 ## Concepts clés
 
-- **Isolation stricte** : le code de DeBuilder (interface Gradio, scripts d'orchestration) vit dans son propre dépôt Git, totalement séparé du projet cible sur lequel l'agent travaille. L'agent n'a ni la permission ni le besoin de lire ou modifier le code de DeBuilder.
+- **Isolation stricte** : le code de DeBuilder (interface web, scripts d'orchestration) vit dans son propre dépôt Git, totalement séparé du projet cible sur lequel l'agent travaille. L'agent n'a ni la permission ni le besoin de lire ou modifier le code de DeBuilder.
 - **Autonomie complète** : l'agent commit et pousse son travail à chaque itération, uniquement sur le dépôt du projet cible. Il ne bloque jamais en attendant une réponse humaine — s'il lui manque une ressource, il applique une solution de contournement et le signale.
 - **Communication par fichiers** : GUI et boucle agent ne communiquent jamais directement en mémoire. Tout passe par le système de fichiers (`AGENTS.md`, `PROGRESS.md`, `BENCHMARKS.md`, ...), protégé par du file locking pour éviter toute corruption entre l'écriture de l'agent et le polling de l'interface.
 - **Conscience matérielle** : au démarrage d'une session, DeBuilder audite la machine hôte (CPU, RAM, GPU) et transmet ces informations à l'agent, qui adapte ses décisions d'implémentation en conséquence (ex : entraîner un modèle si un GPU est disponible).
@@ -28,21 +28,28 @@ L'agent tourne en boucle, itération après itération, sans mémoire de context
 ## Architecture
 
 ```
-┌─────────────────────────┐         fichiers d'état          ┌──────────────────────────┐
-│   Interface Gradio      │ <----------------------------->  │  Boucle agent            │
-│   (src/app.py, src/gui) │   AGENTS.md, PROGRESS.md,        │   (src/loop/agent_loop.sh│
-│   port 7680             │   BENCHMARKS.md, SUGGESTIONS.md, │    + src/loop/agent.py)  │
-│                         │   RESOURCES_NEEDED.md, DONE      │                          │
-└─────────────────────────┘                                  └───────────┬──────────────┘
-                                                                         │ opencode run
-                                                                         v
+┌────────────────────────────┐                                ┌──────────────────────────┐
+│  Frontend (navigateur)     │                                │  Boucle agent            │
+│  src/web/static/           │                                │  (src/loop/agent_loop.sh │
+│  HTML/JS vanilla, SSE      │                                │   + src/loop/agent.py)   │
+└─────────────┬───────────────┘                                └───────────┬──────────────┘
+              │ HTTP (REST) + SSE (/api/logs/stream)                       │
+              v                                                            │
+┌────────────────────────────┐         fichiers d'état                    │
+│  Backend FastAPI            │ <----------------------------------------->│
+│  (src/web/app.py,           │   AGENTS.md, PROGRESS.md,                 │
+│   src/web/routes_*.py)      │   BENCHMARKS.md, SUGGESTIONS.md,          │
+│  port 7680                  │   RESOURCES_NEEDED.md, DONE               │
+└────────────────────────────┘                                 opencode run
+                                                                            │
+                                                                            v
                                                                  ┌──────────────────┐
                                                                  │  Dépôt du projet │
                                                                  │  cible (Git)     │
                                                                  └──────────────────┘
 ```
 
-Le dépôt de DeBuilder et le dépôt du projet cible restent deux dépôts Git indépendants tout au long de la session.
+Le backend FastAPI et la boucle agent ne communiquent jamais directement en mémoire : tout passe par les fichiers d'état ci-dessus, exactement comme avec l'ancienne interface Gradio qu'il remplace. Le dépôt de DeBuilder et le dépôt du projet cible restent deux dépôts Git indépendants tout au long de la session.
 
 ## Prérequis
 
@@ -52,7 +59,7 @@ Le dépôt de DeBuilder et le dépôt du projet cible restent deux dépôts Git 
 - Une clé API pour un fournisseur supporté (DeepSeek, OpenAI ou Anthropic)
 - `tmux` (recommandé, pour la persistance de session en cas de déconnexion)
 
-`start.sh` détecte et installe automatiquement les dépendances manquantes (pip, Gradio, OpenCode, tmux) sur les images minimales type RunPod.
+`start.sh` détecte et installe automatiquement les dépendances manquantes (pip, FastAPI/uvicorn, OpenCode, tmux) sur les images minimales type RunPod.
 
 ## Installation et démarrage
 
@@ -65,7 +72,7 @@ cd debuilder
 Le script :
 1. détecte un interpréteur Python compatible (3.10 à 3.14),
 2. installe les dépendances manquantes si besoin,
-3. lance l'interface Gradio dans une session `tmux` nommée `debuilder` (persistante en cas de déconnexion).
+3. lance l'interface web (FastAPI/uvicorn) dans une session `tmux` nommée `debuilder` (persistante en cas de déconnexion).
 
 ```bash
 tmux attach -t debuilder   # rattacher la session
@@ -78,17 +85,17 @@ L'interface est ensuite disponible sur `http://<host>:7680` (port configurable v
 
 ## Utilisation de l'interface
 
-L'interface Gradio est organisée en cinq onglets :
+L'interface web tient sur une seule page, sans navigation par onglets pour l'essentiel — seuls la Progression et les Benchmarks ont un onglet dédié en haut de page :
 
-| Onglet | Rôle |
+| Zone / onglet | Rôle |
 |---|---|
-| **Configuration** | Démarrer une session : cloner un dépôt Git ou initialiser un projet vierge, définir le cahier des charges initial (→ `AGENTS.md`), choisir le fournisseur/modèle IA et fournir la clé API, lancer la boucle agent en arrière-plan. |
-| **Tableau de Bord** | Suivi en lecture seule : résumé en langage naturel de l'activité en cours (généré par LLM ou par heuristique de repli), avancement (`PROGRESS.md`), métriques (`BENCHMARKS.md`), alertes watchdog et alertes système. Rafraîchissement automatique toutes les 30s. |
-| **Centre de Contrôle** | Intervention asynchrone : boîte aux lettres pour envoyer des suggestions à l'agent (`SUGGESTIONS.md`), arrêt d'urgence (kill-switch), rollback du dernier commit (`git reset --hard HEAD~1`), activation de barrières Human-in-the-Loop sur des types d'opérations sensibles. |
-| **Requêtes Agent** | Consultation des demandes de ressources émises par l'agent (`RESOURCES_NEEDED.md`, non bloquantes par conception) et envoi d'une réponse. |
-| **Logs Systèmes** | Affichage brut des 200 dernières lignes de `OPENCODE_LOG.txt`, pour le débogage approfondi. |
+| **Écran de configuration** | Affiché uniquement en l'absence de session active : cloner un dépôt Git ou initialiser un projet vierge, définir le cahier des charges initial (→ `AGENTS.md`), choisir le fournisseur/modèle IA et fournir la clé API, lancer la boucle agent en arrière-plan (`POST /api/session/start`). |
+| **Tableau de bord (zone principale)** | Résumé en langage naturel de l'activité en cours (généré par LLM ou par heuristique de repli), avancement (`PROGRESS.md` parsé), alertes watchdog/système, et flux des logs OpenCode quasi temps réel (Server-Sent Events sur `/api/logs/stream`, style terminal). |
+| **Tableau de bord (zone latérale)** | Requêtes agent (`RESOURCES_NEEDED.md` + réponse courte), boîte aux lettres de suggestions (`SUGGESTIONS.md`), contrôles (arrêt d'urgence, rollback `git reset --hard HEAD~1`, barrières Human-in-the-Loop), résumé des dernières métriques de `BENCHMARKS.md`. |
+| **Onglet Progression** | Contenu intégral et à jour de `PROGRESS.md`, rendu en Markdown. |
+| **Onglet Benchmarks** | Contenu intégral et à jour de `BENCHMARKS.md`, rendu en Markdown. |
 
-La session active est mémorisée (`~/.debuilder/last_session.txt`) : si l'interface redémarre alors que la boucle agent tourne encore en arrière-plan, les onglets s'y rattachent automatiquement.
+La session active est mémorisée (`~/.debuilder/last_session.txt`) : un F5 pendant qu'une session tourne revient directement sur le tableau de bord (le backend est interrogé au chargement via `GET /api/session`), sans repasser par l'écran de configuration — y compris si l'interface a redémarré alors que la boucle agent tournait encore en arrière-plan.
 
 ## Fichiers d'état du projet cible
 
@@ -109,7 +116,7 @@ Ces fichiers sont créés dans le répertoire du projet cible (jamais dans celui
 
 | Variable | Défaut | Description |
 |---|---|---|
-| `DEBUILDER_PORT` | `7680` | Port d'écoute de l'interface Gradio. |
+| `DEBUILDER_PORT` | `7680` | Port d'écoute de l'interface web. |
 | `DEBUILDER_MODEL` | — | Modèle OpenCode actif, format `fournisseur/modele` (défini automatiquement au démarrage d'une session). |
 | `DEBUILDER_STATE_DIR` | `~/.debuilder` | Répertoire de persistance de la session active (hors dépôts Git). |
 | `DEBUILDER_OPENCODE_INACTIVITY_TIMEOUT` | `600` (10 min) | Délai max sans nouvelle sortie d'OpenCode avant de tuer l'itération (processus réellement bloqué). |
@@ -125,11 +132,11 @@ Ces fichiers sont créés dans le répertoire du projet cible (jamais dans celui
 
 L'outil `webfetch` est disponible dans OpenCode quel que soit le fournisseur : seule sa permission a besoin d'être accordée.
 
-Les clés API des fournisseurs (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) sont saisies depuis l'onglet Configuration et injectées comme variables d'environnement éphémères : **elles ne sont jamais écrites sur disque.**
+Les clés API des fournisseurs (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) sont saisies depuis l'écran de configuration et injectées comme variables d'environnement éphémères : **elles ne sont jamais écrites sur disque.**
 
 ## Sécurité
 
-- Toute sortie affichée dans la GUI ou écrite dans les logs/commits passe par `sanitize_text()`, qui masque les valeurs de toute variable d'environnement dont le nom contient `KEY`, `SECRET`, `TOKEN`, `PASSWORD` ou `API`.
+- Toute sortie affichée dans l'interface web (y compris le flux de logs SSE) ou écrite dans les logs/commits passe par `sanitize_text()`, qui masque les valeurs de toute variable d'environnement dont le nom contient `KEY`, `SECRET`, `TOKEN`, `PASSWORD` ou `API`.
 - Les fichiers opérationnels de DeBuilder (`DONE`, `BARRIER_*`, `*.lock`, `OPENCODE_LOG.txt`) sont exclus des commits sur le dépôt du projet cible.
 - L'accès internet de l'agent sort de la machine : les requêtes `websearch` transitent par le service hébergé Exa et `webfetch` contacte directement les URL demandées. L'agent est explicitement instruit de ne jamais placer de secret ni de code propriétaire du projet dans une requête. Sur un projet sensible, couper l'accès avec `DEBUILDER_WEB_TOOLS=0`.
 - L'agent n'a jamais accès en lecture ou écriture au dépôt Git de DeBuilder lui-même ; toutes les opérations Git de la boucle agent (`commit`, `push`, `rollback`) ciblent exclusivement le répertoire du projet.
@@ -141,13 +148,12 @@ pip install -r requirements.txt
 python -m pytest
 ```
 
-La suite de tests couvre le file locking, la gestion des fichiers d'état, les secrets, le parsing Markdown, l'audit matériel et la logique d'itération de l'agent (`tests/`).
+La suite de tests couvre le file locking, la gestion des fichiers d'état, les secrets, le parsing Markdown, l'audit matériel, la logique d'itération de l'agent, et les routes FastAPI (session, contrôles, flux SSE des logs) (`tests/`).
 
 ## Structure du dépôt
 
 ```
 src/
-├── app.py                     # Point d'entrée Gradio (assemble les 5 onglets)
 ├── core/
 │   ├── filelock.py            # Verrouillage de fichiers (fcntl)
 │   ├── git.py                 # Opérations Git sur le dépôt cible (clone, commit, push, rollback)
@@ -155,12 +161,14 @@ src/
 │   ├── secrets.py             # Injection et sanitization des secrets
 │   ├── session.py             # Persistance de la session active entre redémarrages
 │   └── state.py               # Lecture/écriture des fichiers d'état, fenêtre glissante de PROGRESS.md
-├── gui/
-│   ├── config.py               # Onglet Configuration
-│   ├── dashboard.py            # Onglet Tableau de Bord
-│   ├── control.py              # Onglet Centre de Contrôle
-│   ├── agents.py               # Onglet Requêtes Agent
-│   └── logs.py                 # Onglet Logs Systèmes
+├── web/
+│   ├── app.py                  # Point d'entrée FastAPI (sert /static et /, monte les routes)
+│   ├── routes_session.py       # GET /api/session, POST /api/session/start
+│   ├── routes_dashboard.py     # GET /api/dashboard, /api/progress, /api/benchmarks
+│   ├── routes_control.py       # POST /api/suggestions, /api/control/{kill,rollback,barrier}
+│   ├── routes_requests.py      # GET /api/requests, POST /api/requests/respond
+│   ├── routes_logs.py          # GET /api/logs/stream (Server-Sent Events)
+│   └── static/                 # Frontend HTML/JS/CSS vanilla (index.html, app.js, style.css)
 ├── loop/
 │   ├── agent_loop.sh           # Boucle shell : une itération OpenCode à la fois
 │   └── agent.py                # Construction du prompt, exécution d'OpenCode, mise à jour de l'état

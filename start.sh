@@ -49,19 +49,10 @@ if ! ${PYTHON_BIN} -m pip --version &>/dev/null; then
     ${PYTHON_BIN} -m ensurepip --upgrade 2>/dev/null || true
 fi
 
-if ! ${PYTHON_BIN} -c "import gradio" 2>/dev/null; then
-    echo "[DeBuilder] Gradio non installe. Installation..." >&2
-    ${PYTHON_BIN} -m pip install gradio --break-system-packages 2>/dev/null || \
-        ${PYTHON_BIN} -m pip install gradio
-fi
-
-# Certaines images RunPod embarquent un "six" trop ancien (<1.17) dont
-# le mecanisme six.moves repose sur l'API find_module/load_module retiree
-# en Python 3.12+, ce qui casse l'import de gradio (via pandas/dateutil).
-if ! ${PYTHON_BIN} -c "import six.moves" 2>/dev/null; then
-    echo "[DeBuilder] six obsolete (incompatible Python 3.12+). Mise a jour..." >&2
-    ${PYTHON_BIN} -m pip install --upgrade "six>=1.17.0" --break-system-packages 2>/dev/null || \
-        ${PYTHON_BIN} -m pip install --upgrade "six>=1.17.0"
+if ! ${PYTHON_BIN} -c "import fastapi, uvicorn" 2>/dev/null; then
+    echo "[DeBuilder] FastAPI/uvicorn non installes. Installation..." >&2
+    ${PYTHON_BIN} -m pip install fastapi uvicorn --break-system-packages 2>/dev/null || \
+        ${PYTHON_BIN} -m pip install fastapi uvicorn
 fi
 
 if ! command -v opencode &>/dev/null && [ ! -x /usr/local/bin/opencode ]; then
@@ -133,7 +124,7 @@ if ! command -v tmux &>/dev/null; then
     echo "[DeBuilder] ATTENTION: tmux indisponible et installation impossible." >&2
     echo "[DeBuilder] Lancement direct (pas de persistance en cas de deconnexion)." >&2
     cd "${SCRIPT_DIR}"
-    exec "${PYTHON_BIN}" -m src.app
+    exec "${PYTHON_BIN}" -m src.web.app
 fi
 
 if tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
@@ -143,7 +134,7 @@ if tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
 fi
 
 tmux new-session -d -s "${SESSION_NAME}" -c "${SCRIPT_DIR}" \
-    "${PYTHON_BIN} -m src.app"
+    "${PYTHON_BIN} -m src.web.app"
 
 echo "[DeBuilder] Demarre en arriere-plan (port ${DEBUILDER_PORT})." >&2
 echo "[DeBuilder] Pour attacher:  tmux attach-session -t ${SESSION_NAME}" >&2
