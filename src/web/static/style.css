@@ -1,0 +1,393 @@
+:root {
+  --bg: #0f1115;
+  --surface: #171a21;
+  --surface-alt: #1e222b;
+  --border: #2a2f3a;
+  --text: #e6e6e6;
+  --text-muted: #9aa0ac;
+  --accent: #4f8cff;
+  --accent-hover: #6ea0ff;
+  --danger: #e5484d;
+  --danger-hover: #ff6b70;
+  --warning: #f5a623;
+  --warning-hover: #ffb84d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.topbar {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.subtitle {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.screen {
+  padding: 1.5rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.card.compact {
+  padding: 0.85rem 1rem;
+}
+
+.card h2 {
+  margin-top: 0;
+  font-size: 1rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.card h3 {
+  margin-top: 0;
+  font-size: 0.95rem;
+  color: var(--text-muted);
+}
+
+/* Configuration */
+
+.config-form {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 2rem;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.form-col label {
+  display: block;
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.field-hint {
+  margin: 0.15rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+input[type="text"],
+input[type="password"],
+select,
+textarea {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+/* Tabs */
+
+.tabbar {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  border-bottom: 2px solid transparent;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+/* Dashboard layout */
+
+.dashboard-layout {
+  display: flex;
+  gap: 1.25rem;
+  align-items: flex-start;
+}
+
+.main-zone {
+  flex: 3;
+  min-width: 0;
+}
+
+.side-zone {
+  flex: 1;
+  min-width: 260px;
+  font-size: 0.85rem;
+}
+
+.side-zone .card h3 {
+  margin-bottom: 0.5rem;
+}
+
+@media (max-width: 900px) {
+  .dashboard-layout {
+    flex-direction: column;
+  }
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Alerts */
+
+.alert-banner {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.alert-banner.alert-danger {
+  background: rgba(229, 72, 77, 0.15);
+  border: 1px solid var(--danger);
+  color: #ffb3b6;
+}
+
+.alert-banner.alert-warning {
+  background: rgba(245, 166, 35, 0.12);
+  border: 1px solid var(--warning);
+  color: #ffd68a;
+}
+
+/* Terminal / logs */
+
+.logs-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal {
+  background: #08090b;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  height: 420px;
+  overflow-y: auto;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  color: #c9d1d9;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Buttons */
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn-lg {
+  padding: 0.7rem 1.4rem;
+  font-size: 0.95rem;
+  margin-top: 0.5rem;
+}
+
+.btn-secondary {
+  background: var(--surface-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  border-color: var(--accent);
+}
+
+.btn-danger {
+  background: rgba(229, 72, 77, 0.15);
+  color: #ffb3b6;
+  border: 1px solid var(--danger);
+}
+
+.btn-danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+.btn-warning {
+  background: rgba(245, 166, 35, 0.12);
+  color: #ffd68a;
+  border: 1px solid var(--warning);
+}
+
+.btn-warning:hover {
+  background: var(--warning);
+  color: #1a1400;
+}
+
+.control-row,
+.barrier-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.barrier-row select {
+  flex: 1;
+  min-width: 120px;
+}
+
+form textarea {
+  margin-bottom: 0.4rem;
+}
+
+/* Status messages */
+
+.status-msg {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  min-height: 1.2em;
+}
+
+.status-msg.small {
+  font-size: 0.78rem;
+}
+
+.status-msg.error {
+  color: var(--danger-hover);
+}
+
+.status-msg.success {
+  color: #7fe0ab;
+}
+
+/* Markdown rendering */
+
+.markdown-body {
+  font-size: 0.9rem;
+}
+
+.markdown-body.small {
+  font-size: 0.8rem;
+}
+
+.markdown-body p:first-child {
+  margin-top: 0;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+}
+
+.markdown-body code {
+  background: var(--surface-alt);
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+}
+
+.markdown-body pre {
+  background: var(--surface-alt);
+  padding: 0.6rem;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+/* Benchmarks summary (key/value) */
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.kv:last-child {
+  border-bottom: none;
+}
+
+.kv-key {
+  color: var(--text-muted);
+}
+
+.muted {
+  color: var(--text-muted);
+}

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeBuilder — Orchestrateur OpenCode</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <h1>DeBuilder</h1>
+  <span class="subtitle">Orchestrateur OpenCode</span>
+</header>
+
+<!-- Ecran de configuration : visible si aucune session active -->
+<main id="config-screen" class="screen hidden">
+  <form id="config-form" class="config-form card">
+    <h2>Démarrage d'une session</h2>
+
+    <div class="form-grid">
+      <div class="form-col">
+        <h3>Projet</h3>
+
+        <label for="f-repo-url">URL du dépôt Git (optionnel)</label>
+        <input id="f-repo-url" type="text" placeholder="https://github.com/user/repo.git">
+
+        <label for="f-workspace-dir">Répertoire de travail</label>
+        <input id="f-workspace-dir" type="text" placeholder="/workspace/mon-projet" required>
+
+        <label for="f-instructions">Cahier des charges</label>
+        <textarea id="f-instructions" rows="4" placeholder="Décrivez l'objectif du projet..."></textarea>
+
+        <h3>Git (optionnel)</h3>
+
+        <label for="f-github-token">Token GitHub</label>
+        <input id="f-github-token" type="password" placeholder="ghp_... ou github_pat_...">
+        <p class="field-hint">Pour push automatique sur le dépôt. Jamais écrit sur le disque.</p>
+
+        <div class="form-row">
+          <div>
+            <label for="f-git-name">Nom Git</label>
+            <input id="f-git-name" type="text" placeholder="DeBuilder Agent">
+          </div>
+          <div>
+            <label for="f-git-email">Email Git</label>
+            <input id="f-git-email" type="text" placeholder="agent@debuilder.local">
+          </div>
+        </div>
+      </div>
+
+      <div class="form-col">
+        <h3>Modèle IA</h3>
+
+        <label for="f-provider">Fournisseur</label>
+        <select id="f-provider">
+          <option value="DeepSeek" selected>DeepSeek</option>
+          <option value="OpenAI">OpenAI</option>
+          <option value="Anthropic">Anthropic</option>
+          <option value="Autre (custom)">Autre (custom)</option>
+        </select>
+
+        <label for="f-model">Modèle</label>
+        <input id="f-model" type="text" value="deepseek/deepseek-v4-pro" placeholder="deepseek/deepseek-v4-pro">
+        <p class="field-hint">Format opencode : fournisseur/modele.</p>
+
+        <label for="f-api-key">Clé API</label>
+        <input id="f-api-key" type="password" placeholder="sk-..." required>
+        <p class="field-hint">Jamais écrite sur le disque.</p>
+      </div>
+    </div>
+
+    <button type="submit" class="btn-primary btn-lg">Démarrer la session</button>
+    <div id="config-status" class="status-msg markdown-body"></div>
+  </form>
+</main>
+
+<!-- Ecran principal : Dashboard + onglets Progression/Benchmarks -->
+<main id="dashboard-screen" class="screen hidden">
+  <nav class="tabbar">
+    <button class="tab-btn active" data-tab="dashboard">Tableau de bord</button>
+    <button class="tab-btn" data-tab="progress">Progression</button>
+    <button class="tab-btn" data-tab="benchmarks">Benchmarks</button>
+  </nav>
+
+  <section id="tab-dashboard" class="tab-panel">
+    <div class="dashboard-layout">
+
+      <div class="main-zone">
+        <div id="system-alerts" class="alert-banner alert-danger hidden markdown-body"></div>
+        <div id="watchdog-alerts" class="alert-banner alert-warning hidden markdown-body"></div>
+
+        <section class="card">
+          <h2>Activité en cours</h2>
+          <div id="activity-text" class="markdown-body">Chargement...</div>
+        </section>
+
+        <section class="card">
+          <h2>Avancement</h2>
+          <div id="progress-summary" class="markdown-body">Chargement...</div>
+        </section>
+
+        <section class="card logs-card">
+          <h2>Logs OpenCode (temps réel)</h2>
+          <div id="log-terminal" class="terminal"></div>
+        </section>
+      </div>
+
+      <aside class="side-zone">
+        <section class="card compact">
+          <h3>Requêtes de l'agent</h3>
+          <div id="requests-content" class="markdown-body small">Chargement...</div>
+          <form id="respond-form">
+            <textarea id="respond-input" rows="2" placeholder="Réponse à la demande..."></textarea>
+            <button type="submit" class="btn-secondary">Répondre</button>
+          </form>
+          <p id="respond-status" class="status-msg small"></p>
+        </section>
+
+        <section class="card compact">
+          <h3>Suggestions</h3>
+          <form id="suggestion-form">
+            <textarea id="suggestion-input" rows="2" placeholder="Suggestion, directive, observation..."></textarea>
+            <button type="submit" class="btn-secondary">Envoyer</button>
+          </form>
+          <p id="suggestion-status" class="status-msg small"></p>
+        </section>
+
+        <section class="card compact">
+          <h3>Contrôles</h3>
+          <div class="control-row">
+            <button id="kill-btn" class="btn-danger">Arrêt d'urgence</button>
+            <button id="rollback-btn" class="btn-warning">Rollback HEAD~1</button>
+          </div>
+          <p id="control-status" class="status-msg small"></p>
+
+          <div class="barrier-row">
+            <select id="barrier-type">
+              <option value="entrainement">Entraînement</option>
+              <option value="deploiement">Déploiement</option>
+              <option value="modification_critique">Modif. critique</option>
+            </select>
+            <button id="barrier-enable-btn" class="btn-secondary">Activer</button>
+            <button id="barrier-disable-btn" class="btn-secondary">Désactiver</button>
+          </div>
+          <p id="barrier-status" class="status-msg small"></p>
+        </section>
+
+        <section class="card compact">
+          <h3>Benchmarks (résumé)</h3>
+          <div id="benchmarks-summary" class="small"></div>
+        </section>
+      </aside>
+
+    </div>
+  </section>
+
+  <section id="tab-progress" class="tab-panel hidden">
+    <div id="progress-full" class="markdown-body card"></div>
+  </section>
+
+  <section id="tab-benchmarks" class="tab-panel hidden">
+    <div id="benchmarks-full" class="markdown-body card"></div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
