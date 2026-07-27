@@ -102,6 +102,32 @@ def test_llm_failure_falls_back_to_heuristic_with_warning(monkeypatch):
     assert "ConnectError" in summary.warning
 
 
+def test_llm_empty_response_falls_back_to_heuristic_with_warning(monkeypatch):
+    # Un modele "raisonneur" peut consommer tout le budget de tokens en
+    # reflexion interne et renvoyer un champ content vide : ca ne doit
+    # pas produire un resume vide affiche a l'utilisateur.
+    os.environ["DEBUILDER_MODEL"] = "deepseek/deepseek-chat"
+    os.environ["DEEPSEEK_API_KEY"] = "sk-test-key-1234567890"
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"choices": [{"message": {"content": "   "}}]}
+
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    summary = summarize_logs("=== Iteration A ===\nTout va bien.\n", cache_key="empty-llm-key")
+
+    assert "Iteration en cours depuis A" in summary.text
+    assert summary.warning is not None
+    assert "vide" in summary.warning.lower()
+
+
 def test_llm_http_error_reports_status_in_warning(monkeypatch):
     os.environ["DEBUILDER_MODEL"] = "deepseek/deepseek-chat"
     os.environ["DEEPSEEK_API_KEY"] = "sk-test-key-1234567890"

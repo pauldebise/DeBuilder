@@ -26,11 +26,11 @@ _MAX_LOG_CHARS = 8000
 
 _SYSTEM_PROMPT = (
     "Tu observes les logs bruts d'un agent de developpement IA autonome. "
-    "Resume en 2 a 4 phrases simples, en francais, ce que l'agent est en "
-    "train de faire ou vient de faire (derniere action, resultat, erreur "
-    "eventuelle). Pas de jargon technique inutile : le lecteur supervise "
-    "l'agent sans lire le log brut. Ne mentionne jamais de cle API, token "
-    "ou secret meme si tu en vois un fragment."
+    "Resume en exactement 2 phrases courtes et simples, en francais, ce que "
+    "l'agent est en train de faire ou vient de faire (derniere action, "
+    "resultat, erreur eventuelle). Pas de jargon technique inutile : le "
+    "lecteur supervise l'agent sans lire le log brut. Ne mentionne jamais "
+    "de cle API, token ou secret meme si tu en vois un fragment."
 )
 
 # Fournisseurs opencode connus (cf. src/gui/config.py) : la cle et le
@@ -127,14 +127,24 @@ def _summarize_with_llm(raw_log: str) -> tuple[str | None, str | None]:
 
     try:
         if provider["kind"] == "anthropic":
-            return _call_anthropic(provider, clean_log), None
-        return _call_openai_compatible(provider, clean_log), None
+            text = _call_anthropic(provider, clean_log)
+        else:
+            text = _call_openai_compatible(provider, clean_log)
     except httpx.HTTPStatusError as exc:
         return None, f"erreur HTTP {exc.response.status_code}"
     except httpx.HTTPError as exc:
         return None, type(exc).__name__
     except (KeyError, ValueError, IndexError):
         return None, "reponse du fournisseur illisible"
+
+    # Certains modeles (notamment les modeles "raisonneurs") peuvent
+    # consommer tout le budget de tokens en reflexion interne et
+    # renvoyer un champ content vide : sans ce garde-fou, un resume
+    # vide serait mis en cache et affiche tel quel au lieu de basculer
+    # sur le repli heuristique.
+    if not text or not text.strip():
+        return None, "reponse vide du fournisseur"
+    return text, None
 
 
 def _active_provider() -> dict | None:
@@ -164,7 +174,6 @@ def _call_openai_compatible(provider: dict, clean_log: str) -> str | None:
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": clean_log},
             ],
-            "max_tokens": 220,
             "temperature": 0.3,
         },
         timeout=_TIMEOUT,
@@ -183,7 +192,10 @@ def _call_anthropic(provider: dict, clean_log: str) -> str | None:
         },
         json={
             "model": provider["model"],
-            "max_tokens": 220,
+            # L'API Anthropic exige max_tokens (pas de valeur "illimitee"
+            # possible) ; une valeur large ici n'est qu'un garde-fou, le
+            # prompt systeme impose deja un resume tres court.
+            "max_tokens": 1024,
             "system": _SYSTEM_PROMPT,
             "messages": [{"role": "user", "content": clean_log}],
         },
