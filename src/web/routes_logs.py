@@ -53,13 +53,18 @@ async def _tail_and_follow(request: Request, target_dir_str: str):
     target_dir = Path(target_dir_str)
     log_file = target_dir / _LOG_FILENAME
 
-    for line in read_log_tail(target_dir, _LOG_FILENAME, _TAIL_LINES).split("\n"):
+    tail_text = read_log_tail(target_dir, _LOG_FILENAME, _TAIL_LINES)
+    # Fige l'offset de suivi juste apres la lecture du tail, avant tout
+    # point de suspension (yield) : sinon, une ligne ecrite pendant
+    # l'emission du tail au client tomberait dans l'angle mort (ni
+    # comprise dans le tail deja lu, ni detectee comme "nouvelle").
+    offset = log_file.stat().st_size if log_file.exists() else 0
+    buffer = ""
+
+    for line in tail_text.split("\n"):
         if await request.is_disconnected():
             return
         yield _sse_event(line)
-
-    offset = log_file.stat().st_size if log_file.exists() else 0
-    buffer = ""
 
     while True:
         if await request.is_disconnected():

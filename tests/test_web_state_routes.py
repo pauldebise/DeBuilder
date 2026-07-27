@@ -1,0 +1,170 @@
+"""Tests pour les routes de controle et de requetes (routes_control.py,
+routes_requests.py) : verifie que les effets fichiers sont identiques
+a ceux produits par les anciens callbacks Gradio (src/gui/control.py,
+src/gui/agents.py), qui appelaient les memes fonctions de
+src/core/state.py et src/core/git.py.
+"""
+
+import subprocess
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from src.core.git import commit_all, init_repo
+from src.web.app import app
+
+client = TestClient(app)
+
+
+def _init_test_repo(repo_dir: Path) -> None:
+    assert init_repo(repo_dir)
+    _run(repo_dir, "config", "user.email", "test@test.com")
+    _run(repo_dir, "config", "user.name", "Test")
+
+
+def _run(repo_dir: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git"] + list(args),
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+# --- Suggestions -----------------------------------------------------------
+
+
+def test_send_suggestion_appends_to_file(tmp_path: Path):
+    resp = client.post(
+        "/api/suggestions",
+        json={"target_dir": str(tmp_path), "message": "Attention a la memoire"},
+    )
+
+    assert resp.status_code == 200
+    assert "Suggestion envoyee" in resp.json()["message"]
+    assert "> Attention a la memoire" in (tmp_path / "SUGGESTIONS.md").read_text()
+
+
+def test_send_suggestion_requires_target_dir():
+    resp = client.post("/api/suggestions", json={"target_dir": "", "message": "x"})
+    assert resp.status_code == 400
+
+
+def test_send_suggestion_requires_message(tmp_path: Path):
+    resp = client.post("/api/suggestions", json={"target_dir": str(tmp_path), "message": "   "})
+    assert resp.status_code == 400
+
+
+# --- Kill-switch -------------------------------------------------------------
+
+
+def test_kill_switch_creates_done_file(tmp_path: Path):
+    resp = client.post("/api/control/kill", json={"target_dir": str(tmp_path)})
+
+    assert resp.status_code == 200
+    assert (tmp_path / "DONE").exists()
+
+
+def test_kill_switch_requires_target_dir():
+    resp = client.post("/api/control/kill", json={"target_dir": ""})
+    assert resp.status_code == 400
+
+
+# --- Rollback ----------------------------------------------------------------
+
+
+def test_rollback_reverts_last_commit(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "file1.txt").write_text("version 1")
+    commit_all(repo_dir, "commit 1")
+    (repo_dir / "file1.txt").write_text("version 2")
+    commit_all(repo_dir, "commit 2")
+
+    resp = client.post("/api/control/rollback", json={"target_dir": str(repo_dir)})
+
+    assert resp.status_code == 200
+    assert (repo_dir / "file1.txt").read_text() == "version 1"
+
+
+def test_rollback_fails_without_prior_commit(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "file1.txt").write_text("seule version")
+    commit_all(repo_dir, "unique commit")
+
+    resp = client.post("/api/control/rollback", json={"target_dir": str(repo_dir)})
+
+    assert resp.status_code == 400
+    assert (repo_dir / "file1.txt").read_text() == "seule version"
+
+
+def test_rollback_requires_target_dir():
+    resp = client.post("/api/control/rollback", json={"target_dir": ""})
+    assert resp.status_code == 400
+
+
+# --- Barrieres ---------------------------------------------------------------
+
+
+def test_enable_and_disable_barrier(tmp_path: Path):
+    enable_resp = client.post(
+        "/api/control/barrier",
+        json={"target_dir": str(tmp_path), "barrier_type": "entrainement", "enabled": True},
+    )
+    assert enable_resp.status_code == 200
+    assert (tmp_path / "BARRIER_ENTRAINEMENT").exists()
+
+    disable_resp = client.post(
+        "/api/control/barrier",
+        json={"target_dir": str(tmp_path), "barrier_type": "entrainement", "enabled": False},
+    )
+    assert disable_resp.status_code == 200
+    assert not (tmp_path / "BARRIER_ENTRAINEMENT").exists()
+
+
+def test_disable_barrier_is_noop_when_absent(tmp_path: Path):
+    resp = client.post(
+        "/api/control/barrier",
+        json={"target_dir": str(tmp_path), "barrier_type": "deploiement", "enabled": False},
+    )
+    assert resp.status_code == 200
+
+
+# --- Requetes agent -----------------------------------------------------------
+
+
+def test_get_requests_returns_placeholder_when_empty(tmp_path: Path):
+    (tmp_path / "RESOURCES_NEEDED.md").write_text("")
+
+    resp = client.get("/api/requests", params={"target_dir": str(tmp_path)})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"content": "*Aucune demande en attente.*"}
+
+
+def test_get_requests_returns_content(tmp_path: Path):
+    (tmp_path / "RESOURCES_NEEDED.md").write_text("GPU supplementaire demande.")
+
+    resp = client.get("/api/requests", params={"target_dir": str(tmp_path)})
+
+    assert resp.json() == {"content": "GPU supplementaire demande."}
+
+
+def test_respond_to_request_appends_to_suggestions(tmp_path: Path):
+    resp = client.post(
+        "/api/requests/respond",
+        json={"target_dir": str(tmp_path), "response": "Acces accorde"},
+    )
+
+    assert resp.status_code == 200
+    assert "[Ressource] Acces accorde" in (tmp_path / "SUGGESTIONS.md").read_text()
+
+
+def test_respond_to_request_requires_response(tmp_path: Path):
+    resp = client.post(
+        "/api/requests/respond",
+        json={"target_dir": str(tmp_path), "response": ""},
+    )
+    assert resp.status_code == 400
