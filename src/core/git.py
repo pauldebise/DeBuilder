@@ -5,6 +5,7 @@ exclusivement dans le repertoire du projet cible, jamais dans
 le depot DeBuilder.
 """
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -104,7 +105,9 @@ def stage_and_commit_all(repo_dir: Path, message: str) -> tuple[bool, str]:
 
     remote_result = _run(repo_dir, "remote")
     if remote_result.stdout.strip():
-        return push(repo_dir)
+        if os.environ.get("DEBUILDER_GH_TOKEN", "").strip():
+            return push(repo_dir)
+        return True, ""
     return True, ""
 
 

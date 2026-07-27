@@ -1,5 +1,6 @@
 """Tests pour le module git.py."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -98,16 +99,33 @@ def test_stage_and_commit_all_no_changes(tmp_path: Path):
     assert detail == ""
 
 
-def test_stage_and_commit_all_reports_push_failure_detail(tmp_path: Path):
+def test_stage_and_commit_all_reports_push_failure_detail(tmp_path: Path, monkeypatch):
     repo_dir = tmp_path / "repo"
     _init_test_repo(repo_dir)
     _run(repo_dir, "remote", "add", "origin", str(tmp_path / "does-not-exist"))
+
+    monkeypatch.setenv("DEBUILDER_GH_TOKEN", "fake-token-for-test")
 
     (repo_dir / "work.txt").write_text("progress")
     success, detail = stage_and_commit_all(repo_dir, "iteration 1")
 
     assert not success
     assert detail != ""
+
+
+def test_stage_and_commit_all_skips_push_without_token(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    _run(repo_dir, "remote", "add", "origin", str(tmp_path / "does-not-exist"))
+
+    if "DEBUILDER_GH_TOKEN" in os.environ:
+        del os.environ["DEBUILDER_GH_TOKEN"]
+
+    (repo_dir / "work.txt").write_text("progress")
+    success, detail = stage_and_commit_all(repo_dir, "iteration 1")
+
+    assert success
+    assert detail == ""
 
 
 def test_ensure_gitignore_creates_entries(tmp_path: Path):
