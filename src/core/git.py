@@ -155,6 +155,65 @@ def rollback_last(repo_dir: Path) -> bool:
     return result.returncode == 0
 
 
+def head_commit(repo_dir: Path) -> str:
+    """Retourne le hash du commit courant.
+
+    Args:
+        repo_dir: Chemin du depot Git cible.
+
+    Returns:
+        SHA de HEAD, ou chaine vide si le depot n'a pas encore de
+        commit (ex: depot venant d'etre initialise).
+    """
+    result = _run(repo_dir, "rev-parse", "HEAD")
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def tag_iteration(repo_dir: Path, tag_name: str) -> bool:
+    """Pose un tag leger sur le commit courant (HEAD).
+
+    Args:
+        repo_dir: Chemin du depot Git cible.
+        tag_name: Nom du tag (ex: ``debuilder/iter-0012``).
+
+    Returns:
+        True si le tag a ete pose, False sinon.
+    """
+    result = _run(repo_dir, "tag", tag_name)
+    return result.returncode == 0
+
+
+def rollback_to_tag(repo_dir: Path, tag_name: str) -> bool:
+    """Reinitialise le depot sur le tag donne (git reset --hard <tag>).
+
+    Args:
+        repo_dir: Chemin du depot Git cible.
+        tag_name: Nom du tag vers lequel revenir.
+
+    Returns:
+        True si le rollback a reussi, False sinon.
+    """
+    result = _run(repo_dir, "reset", "--hard", tag_name)
+    return result.returncode == 0
+
+
+def list_iteration_tags(repo_dir: Path) -> list[str]:
+    """Liste les tags d'iteration DeBuilder, du plus recent au plus ancien.
+
+    Args:
+        repo_dir: Chemin du depot Git cible.
+
+    Returns:
+        Noms des tags ``debuilder/iter-*``.
+    """
+    result = _run(repo_dir, "tag", "--sort=-creatordate", "--list", "debuilder/iter-*")
+    if result.returncode != 0:
+        return []
+    return [tag for tag in result.stdout.splitlines() if tag.strip()]
+
+
 def clone_repo(url: str, target_dir: Path) -> bool:
     """Clone un depot Git dans le repertoire cible.
 

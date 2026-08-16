@@ -7,9 +7,13 @@ from pathlib import Path
 from src.core.git import (
     commit_all,
     ensure_gitignore,
+    head_commit,
     init_repo,
+    list_iteration_tags,
     rollback_last,
+    rollback_to_tag,
     stage_and_commit_all,
+    tag_iteration,
 )
 
 
@@ -73,6 +77,70 @@ def test_rollback_last(tmp_path: Path):
     result = rollback_last(repo_dir)
     assert result
     assert (repo_dir / "file1.txt").read_text() == "version 1"
+
+
+def test_head_commit_empty_before_first_commit(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    assert head_commit(repo_dir) == ""
+
+
+def test_head_commit_returns_sha_after_commit(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "a.txt").write_text("x")
+    commit_all(repo_dir, "first")
+
+    assert head_commit(repo_dir)
+
+
+def test_tag_iteration_and_list(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "a.txt").write_text("x")
+    commit_all(repo_dir, "first")
+
+    assert tag_iteration(repo_dir, "debuilder/iter-0001")
+    assert tag_iteration(repo_dir, "debuilder/iter-0002")
+
+    tags = list_iteration_tags(repo_dir)
+    assert "debuilder/iter-0001" in tags
+    assert "debuilder/iter-0002" in tags
+
+
+def test_list_iteration_tags_filters_non_debuilder(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "a.txt").write_text("x")
+    commit_all(repo_dir, "first")
+    tag_iteration(repo_dir, "v1.0.0")
+    tag_iteration(repo_dir, "debuilder/iter-0001")
+
+    tags = list_iteration_tags(repo_dir)
+    assert tags == ["debuilder/iter-0001"]
+
+
+def test_rollback_to_tag(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "f.txt").write_text("v1")
+    commit_all(repo_dir, "c1")
+    tag_iteration(repo_dir, "debuilder/iter-0001")
+
+    (repo_dir / "f.txt").write_text("v2")
+    commit_all(repo_dir, "c2")
+
+    assert rollback_to_tag(repo_dir, "debuilder/iter-0001")
+    assert (repo_dir / "f.txt").read_text() == "v1"
+
+
+def test_rollback_to_unknown_tag_fails(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "f.txt").write_text("v1")
+    commit_all(repo_dir, "c1")
+
+    assert not rollback_to_tag(repo_dir, "debuilder/iter-9999")
 
 
 def test_stage_and_commit_all(tmp_path: Path):

@@ -284,6 +284,63 @@ def test_is_no_op():
     assert _is_no_op(["src/main.py", "PROGRESS.md"]) is False
 
 
+def _git(repo_dir: Path, *args: str) -> None:
+    subprocess.run(
+        ["git"] + list(args),
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _init_git_repo(repo_dir: Path) -> None:
+    from src.core.git import ensure_gitignore, init_repo
+
+    assert init_repo(repo_dir)
+    ensure_gitignore(repo_dir)
+    _git(repo_dir, "config", "user.email", "test@test.com")
+    _git(repo_dir, "config", "user.name", "Test")
+
+
+def test_run_iteration_tags_after_effective_commit(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+    from src.core.git import list_iteration_tags
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_run_opencode)
+
+    result = run_iteration(target_dir, iteration_number=1)
+
+    assert result.tags == ["debuilder/iter-0001"]
+    assert list_iteration_tags(target_dir) == ["debuilder/iter-0001"]
+
+
+def test_run_iteration_no_tag_when_no_commit(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+    from src.core.git import list_iteration_tags
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    def _mock_no_output(target_dir, prompt):
+        return subprocess.CompletedProcess(
+            args=["opencode"], returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_no_output)
+
+    run_iteration(target_dir, iteration_number=1)
+    result = run_iteration(target_dir, iteration_number=2)
+
+    assert result.tags == []
+    assert list_iteration_tags(target_dir) == ["debuilder/iter-0001"]
+
+
 def test_rotate_log_if_large_truncates(tmp_path):
     log_file = tmp_path / "OPENCODE_LOG.txt"
     log_file.write_text("=== Iteration old ===\n" + ("x" * 1000) + "\n")

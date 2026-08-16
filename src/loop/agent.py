@@ -23,7 +23,7 @@ from src.core.state import (
     read_state,
     update_progress,
 )
-from src.core.git import stage_and_commit_all, status_files
+from src.core.git import head_commit, stage_and_commit_all, status_files, tag_iteration
 from src.core.iterations import append_entry
 from src.core.secrets import sanitize_text
 from src.utils.text import strip_ansi
@@ -126,11 +126,16 @@ class IterationResult:
     changed_files: int = 0
     no_op: bool = False
     tests_passed: bool | None = None
+    tags: list[str] | None = None
     continue_loop: bool = True
 
     def __bool__(self) -> bool:
         """Compat : ``bool(result)`` vaut l'ancien booleen de boucle."""
         return self.continue_loop
+
+    def __post_init__(self) -> None:
+        if self.tags is None:
+            self.tags = []
 
 
 def run_iteration(
@@ -204,12 +209,24 @@ def run_iteration(
     result.changed_files = len(changed)
     result.no_op = _is_no_op(changed)
 
+    head_before = head_commit(target_dir)
     committed, detail = stage_and_commit_all(target_dir, f"iteration {_timestamp()}")
+    head_after = head_commit(target_dir)
     if not committed:
         _log(
             "[agent] ATTENTION: echec du commit/push automatique de fin "
             f"d'iteration: {sanitize_text(detail)[:500]}"
         )
+    elif head_after and head_after != head_before:
+        # Tag d'iteration uniquement si un commit a effectivement ete
+        # cree (pas sur une iteration no-op sans commit) : le rollback
+        # de l'interface et le bisect s'appuient sur ces tags.
+        tag_name = f"debuilder/iter-{iteration_number:04d}"
+        if tag_iteration(target_dir, tag_name):
+            result.tags.append(tag_name)
+            _log(f"[agent] Tag d'iteration pose : {tag_name}")
+        else:
+            _log(f"[agent] ATTENTION: echec de pose du tag {tag_name}")
 
     result.duration_seconds = round(time.monotonic() - started, 3)
     result.continue_loop = not is_done(target_dir)
@@ -277,6 +294,7 @@ def _journal_iteration(
                 "duration_seconds": result.duration_seconds,
                 "changed_files": result.changed_files,
                 "no_op": result.no_op,
+                "tags": result.tags,
             },
         )
     except Exception as exc:
