@@ -152,7 +152,11 @@ def test_start_session_success_persists_last_session(tmp_path: Path, monkeypatch
     monkeypatch.setattr(routes_session, "ensure_gitignore", lambda d: None)
     monkeypatch.setattr(routes_session, "audit_hardware", lambda: object())
     monkeypatch.setattr(routes_session, "format_for_agent", lambda hw: "CPU: 1")
-    monkeypatch.setattr(routes_session.subprocess, "Popen", lambda *a, **k: None)
+    monkeypatch.setattr(
+        routes_session.subprocess,
+        "Popen",
+        lambda *a, **k: type("Proc", (), {"pid": 4242})(),
+    )
     monkeypatch.setattr(routes_session, "save_last_session", lambda d: saved.setdefault("dir", d))
 
     resp = client.post(

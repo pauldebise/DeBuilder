@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from src.core.git import clone_repo, configure_git, ensure_gitignore, init_repo
+from src.core.loop_status import save_loop_pid
 from src.core.secrets import inject_secrets
 from src.core.session import load_last_session, save_last_session
 from src.core.state import init_project_state
@@ -198,10 +199,14 @@ def start_session(payload: SessionStartRequest) -> dict:
             if value:
                 loop_env[key] = str(value)
 
-        subprocess.Popen(
+        proc = subprocess.Popen(
             ["bash", str(agent_script)],
             env=loop_env,
         )
+        # PID persiste dans $DEBUILDER_STATE_DIR : le tableau de bord
+        # peut ensuite distinguer boucle vivante / morte (cf.
+        # src/core/loop_status.py), meme apres redemarrage de l'interface.
+        save_loop_pid(proc.pid)
 
         save_last_session(target_dir)
 

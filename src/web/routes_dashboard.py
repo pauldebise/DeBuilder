@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from src.core.circuit_breaker import load_breaker_state
 from src.core.iterations import read_entries
 from src.core.log_summarizer import summarize_logs
+from src.core.loop_status import compute_loop_status
 from src.core.state import read_state
 from src.utils.markdown_parser import parse_alerts, parse_benchmarks, parse_progress
 from src.utils.text import read_log_tail
@@ -34,6 +35,7 @@ _NO_SESSION_DASHBOARD = {
     "benchmarks": [],
     "alerts_text": "*Aucune alerte.*",
     "circuit_breaker": None,
+    "loop_status": {"state": "none"},
 }
 
 
@@ -156,4 +158,5 @@ def _get_dashboard_data(target_dir: Path) -> dict:
         "benchmarks": benchmarks,
         "alerts_text": alerts_text,
         "circuit_breaker": breaker_state,
+        "loop_status": compute_loop_status(target_dir),
     }

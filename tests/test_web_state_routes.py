@@ -165,6 +165,32 @@ def test_dashboard_exposes_circuit_breaker_field(tmp_path: Path):
     assert resp.json()["circuit_breaker"]["tripped"] is False
 
 
+def test_dashboard_exposes_loop_status(tmp_path: Path, monkeypatch):
+    import src.web.routes_dashboard as routes_dashboard
+
+    monkeypatch.setattr(
+        routes_dashboard,
+        "compute_loop_status",
+        lambda target_dir: {"state": "active", "iteration": 4, "since_seconds": 60},
+    )
+
+    resp = client.get("/api/dashboard", params={"target_dir": str(tmp_path)})
+
+    assert resp.status_code == 200
+    assert resp.json()["loop_status"] == {
+        "state": "active",
+        "iteration": 4,
+        "since_seconds": 60,
+    }
+
+
+def test_dashboard_without_session_exposes_none_loop_status():
+    resp = client.get("/api/dashboard", params={"target_dir": ""})
+
+    assert resp.status_code == 200
+    assert resp.json()["loop_status"] == {"state": "none"}
+
+
 # --- Journal d'iterations (route /api/iterations, cdc §5.2) ------------------
 
 

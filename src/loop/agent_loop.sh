@@ -55,6 +55,18 @@ record_cap_stop(Path('${TARGET_DIR}'), '${reason}')
 " || true
 }
 
+# Battement de coeur pour le tableau de bord (cf. src/core/loop_status.py) :
+# permet de distinguer une boucle vivante d'une boucle morte apres un
+# crash. Jamais bloquant : une erreur d'ecriture ne doit pas tuer la boucle.
+_heartbeat() {
+    local phase="$1"
+    local state_dir="${DEBUILDER_STATE_DIR:-${HOME}/.debuilder}"
+    mkdir -p "${state_dir}" 2>/dev/null || true
+    printf '{"iteration": %s, "phase": "%s", "updated_at": %s}\n' \
+        "${ITERATION}" "${phase}" "$(date +%s)" \
+        > "${state_dir}/heartbeat.json" 2>/dev/null || true
+}
+
 # Sortie propre : commit d'urgence de l'etat. Si la boucle est tuee
 # (SIGTERM du pod, cap dur, DONE), la derniere mise a jour de
 # PROGRESS.md ne doit pas etre perdue en memoire vive uniquement.
@@ -68,7 +80,7 @@ from src.core.git import stage_and_commit_all
 stage_and_commit_all(Path('${TARGET_DIR}'), 'chore: commit d urgence - sortie de la boucle')
 " >/dev/null 2>&1 || true
 }
-trap _emergency_commit EXIT
+trap '_emergency_commit; _heartbeat exited' EXIT
 
 SLEEP=2
 ITERATION=0
@@ -89,6 +101,7 @@ while true; do
 
     ITERATION=$((ITERATION + 1))
     export DEBUILDER_ITERATION="${ITERATION}"
+    _heartbeat iteration
     echo "[agent_loop] ========================================" >&2
     echo "[agent_loop] Iteration #${ITERATION} - $(date)" >&2
 
@@ -113,6 +126,8 @@ sys.exit(11 if result.failure_type else 0)
         echo "[agent_loop] Arret demande (fichier DONE)." >&2
         break
     fi
+
+    _heartbeat end
 
     if [ "${ITER_STATUS}" -eq 0 ]; then
         SLEEP=2

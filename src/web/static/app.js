@@ -164,11 +164,40 @@ function bindConfigForm() {
 
 // --- Tableau de bord ------------------------------------------------------
 
+const LOOP_STATUS_LABELS = {
+  active: { text: (s) => boucleActiveLabel(s), cls: "ok" },
+  stopping: { text: () => "Arrêt en cours…", cls: "warn" },
+  completed: { text: () => "Mission terminée", cls: "ok" },
+  stopped: { text: () => "Boucle arrêtée", cls: "danger" },
+  dead: { text: () => "Boucle interrompue", cls: "danger" },
+  unknown: { text: () => "État de la boucle inconnu", cls: "muted" },
+};
+
+function boucleActiveLabel(status) {
+  const iteration = status.iteration || 0;
+  const since = status.since_seconds != null ? ` depuis ${formatDuration(status.since_seconds)}` : "";
+  return iteration > 0 ? `Boucle active — itération #${iteration}${since}` : `Boucle active${since}`;
+}
+
+function renderLoopStatus(status) {
+  const el = qs("loop-status");
+  if (!status || status.state === "none") {
+    el.classList.add("hidden");
+    return;
+  }
+  const cfg = LOOP_STATUS_LABELS[status.state] || LOOP_STATUS_LABELS.unknown;
+  el.classList.remove("hidden");
+  el.classList.remove("ok", "warn", "danger", "muted");
+  el.classList.add(cfg.cls);
+  el.textContent = cfg.text(status);
+}
+
 async function refreshDashboard() {
   const resp = await fetch(`/api/dashboard?target_dir=${encodeURIComponent(state.targetDir)}`);
   if (!resp.ok) return;
   const data = await resp.json();
 
+  renderLoopStatus(data.loop_status);
   renderMarkdownInto("activity-text", data.activity_text);
   setAlertBanner("system-alerts", data.system_alerts);
   setAlertBanner("watchdog-alerts", hasRealAlert(data.alerts_text) ? data.alerts_text : "");

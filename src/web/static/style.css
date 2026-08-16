@@ -47,6 +47,37 @@ body {
   font-size: 0.9rem;
 }
 
+.loop-badge {
+  margin-left: auto;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.loop-badge.ok {
+  background: rgba(63, 185, 80, 0.15);
+  border-color: #3fb950;
+  color: #7fe0ab;
+}
+
+.loop-badge.warn {
+  background: rgba(245, 166, 35, 0.12);
+  border-color: var(--warning);
+  color: #ffd68a;
+}
+
+.loop-badge.danger {
+  background: rgba(229, 72, 77, 0.15);
+  border-color: var(--danger);
+  color: #ffb3b6;
+}
+
+.loop-badge.muted {
+  color: var(--text-muted);
+}
+
 .screen {
   padding: 1.5rem;
   max-width: 1400px;
