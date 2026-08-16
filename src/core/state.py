@@ -1,14 +1,16 @@
 """Gestion des fichiers d'etat du projet cible.
 
 Les fichiers d'etat (AGENTS.md, PROGRESS.md, BENCHMARKS.md,
-SUGGESTIONS.md, RESOURCES_NEEDED.md, DONE) sont stockes
-dans le repertoire du projet cible et synchronisent l'agent
+SUGGESTIONS.md, RESOURCES_NEEDED.md, TASK.md, PLAN.md,
+ARCHITECTURE.md, SPEC_COVERAGE.md, FINISHED_REPORT.md, DONE) sont
+stockes dans le repertoire du projet cible et synchronisent l'agent
 et l'interface GUI via le systeme de fichiers.
 
 Toute lecture/ecriture doit passer par le mecanisme de
 verrouillage (filelock) pour eviter les race conditions.
 """
 
+import os
 import re
 from pathlib import Path
 
@@ -31,6 +33,12 @@ STATE_FILES = [
 
 _PROGRESS_SEPARATOR = "\n## Prochaine Sous-Tache Prevue\n"
 _ITERATION_HEADER_RE = re.compile(r"^## (.+)$", re.MULTILINE)
+# Section persistante de PROGRESS.md (jamais tronquee par la fenetre glissante).
+_ARCH_MARKER = "## Decisions d'Architecture"
+# Titre de la section des entrees dans ARCHITECTURE.md.
+_ARCH_DECISIONS_MARKER = "## Decisions"
+# Longueur max d'une entree compactee d'ARCHITECTURE.md (une ligne).
+_ARCH_COMPACTED_ENTRY_CHARS = 200
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "templates"
 
@@ -236,6 +244,145 @@ def clear_suggestions(target_dir: Path) -> None:
         target_dir: Chemin du repertoire du projet cible.
     """
     write_state(target_dir, "SUGGESTIONS.md", "")
+
+
+def repair_progress(target_dir: Path) -> bool:
+    """Repare PROGRESS.md malforme a partir du template (cdc §4.1).
+
+    Un fichier est considere malforme si le separateur de structure
+    (« Prochaine Sous-Tache Prevue ») est absent, ou si la section
+    persistante « Decisions d'Architecture » est tronquee. La
+    reparation preserve le contenu existant au mieux : les entrees
+    d'iterations et la prochaine tache sont conservees telles quelles,
+    seule la structure manquante est restauree.
+
+    Args:
+        target_dir: Chemin du repertoire du projet cible.
+
+    Returns:
+        True si une reparation a eu lieu, False si le fichier etait
+        deja valide (ou absent : rien a reparer, il sera recree par
+        ``init_project_state``).
+    """
+    filepath = target_dir / "PROGRESS.md"
+    with file_lock(filepath):
+        if not filepath.exists():
+            return False
+        current = filepath.read_text(encoding="utf-8")
+        if _progress_is_valid(current):
+            return False
+        _write_file(filepath, _rebuild_progress(current))
+    return True
+
+
+def _progress_is_valid(content: str) -> bool:
+    return _PROGRESS_SEPARATOR in content and _ARCH_MARKER in content
+
+
+def _rebuild_progress(current: str) -> str:
+    template = _render_progress_template()
+
+    if _PROGRESS_SEPARATOR in current:
+        header_body, rest = current.split(_PROGRESS_SEPARATOR, 1)
+        header_body = header_body.strip()
+    else:
+        header_body = current.strip()
+        rest = ""
+
+    if _ARCH_MARKER in rest:
+        next_task = rest.split(_ARCH_MARKER, 1)[0].strip()
+        arch_section = _ARCH_MARKER + rest.split(_ARCH_MARKER, 1)[1].strip()
+    else:
+        next_task = rest.strip()
+        arch_section = (
+            _ARCH_MARKER + template.split(_ARCH_MARKER, 1)[1].strip()
+        )
+
+    if not header_body.startswith("# "):
+        header_body = "# Journal de Progression\n\n" + header_body
+
+    return (
+        header_body
+        + "\n\n## Prochaine Sous-Tache Prevue\n"
+        + (next_task + "\n" if next_task else "")
+        + "\n"
+        + arch_section
+        + "\n"
+    )
+
+
+def compact_architecture(target_dir: Path, max_chars: int | None = None) -> bool:
+    """Compacte ARCHITECTURE.md au-dela de son budget de taille (cdc §4.2).
+
+    Les entrees les plus recentes (en tete de la section « Decisions »)
+    sont conservees intactes ; les plus anciennes sont compactees en
+    une ligne chacune sous « Historique compacte », pour que ce fichier
+    ne gonfle pas indefiniment le prompt de chaque iteration.
+
+    Args:
+        target_dir: Chemin du repertoire du projet cible.
+        max_chars: Budget de taille (defaut :
+            ``DEBUILDER_ARCH_MAX_CHARS``, 4000).
+
+    Returns:
+        True si une compaction a eu lieu, False sinon.
+    """
+    if max_chars is None:
+        max_chars = int(os.environ.get("DEBUILDER_ARCH_MAX_CHARS", "4000"))
+
+    filepath = target_dir / "ARCHITECTURE.md"
+    with file_lock(filepath):
+        if not filepath.exists():
+            return False
+        content = filepath.read_text(encoding="utf-8")
+        if len(content) <= max_chars:
+            return False
+        _write_file(filepath, _compact_arch_content(content, max_chars))
+    return True
+
+
+def _compact_arch_content(content: str, max_chars: int) -> str:
+    marker_index = content.find(_ARCH_DECISIONS_MARKER)
+    if marker_index == -1:
+        # Aucune section Decisions : rien de structurant a compacter.
+        return content
+
+    line_end = content.find("\n", marker_index)
+    if line_end == -1:
+        line_end = len(content)
+    header = content[:line_end].rstrip("\n")
+    decisions_body = content[line_end + 1:]
+
+    entries = [e.strip() for e in decisions_body.split("\n\n") if e.strip()]
+
+    budget = max_chars - len(header) - len("## Historique compacte (entrees anciennes, une ligne chacune)")
+    kept: list[str] = []
+    for entry in entries:
+        if not kept and len(entry) > budget:
+            # Une entree geante (anomalie) : on la tronque plutot que
+            # de tout vider.
+            kept.append(entry[:max(budget, 200)])
+            break
+        if len(entry) <= budget:
+            kept.append(entry)
+            budget -= len(entry) + 2
+        else:
+            break
+
+    compacted = [
+        re.sub(r"\s+", " ", entry).strip()[:_ARCH_COMPACTED_ENTRY_CHARS]
+        for entry in entries[len(kept):]
+    ]
+
+    parts = [header]
+    if kept:
+        parts.append("\n\n".join(kept))
+    if compacted:
+        parts.append(
+            "## Historique compacte (entrees anciennes, une ligne chacune)\n"
+            + "\n".join(compacted)
+        )
+    return "\n\n".join(parts) + "\n"
 
 
 def _write_file(filepath: Path, content: str) -> None:

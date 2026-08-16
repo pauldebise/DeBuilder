@@ -8,9 +8,11 @@ from pathlib import Path
 from src.core.state import (
     append_state,
     clear_suggestions,
+    compact_architecture,
     init_project_state,
     is_done,
     read_state,
+    repair_progress,
     touch_done,
     update_progress,
     write_state,
@@ -132,6 +134,105 @@ def test_clear_suggestions(tmp_path: Path):
     clear_suggestions(tmp_path)
     content = read_state(tmp_path, "SUGGESTIONS.md")
     assert content == ""
+
+
+# --- Reparation deterministe de PROGRESS.md (cdc §4.1) ------------------------
+
+
+def test_repair_progress_restores_missing_separator(tmp_path: Path):
+    init_project_state(tmp_path)
+    write_state(
+        tmp_path,
+        "PROGRESS.md",
+        "# Journal de Progression\n\n## Derniere Iteration (N)\n- Action X\n",
+    )
+
+    changed = repair_progress(tmp_path)
+
+    assert changed is True
+    content = read_state(tmp_path, "PROGRESS.md")
+    assert "## Prochaine Sous-Tache Prevue" in content
+    assert "## Decisions d'Architecture" in content
+    assert "Action X" in content
+
+
+def test_repair_progress_restores_truncated_arch_section(tmp_path: Path):
+    init_project_state(tmp_path)
+    write_state(
+        tmp_path,
+        "PROGRESS.md",
+        "# Journal de Progression\n\n"
+        "## Derniere Iteration (N)\n- A\n\n"
+        "## Prochaine Sous-Tache Prevue\n\n(rien)\n",
+    )
+
+    assert repair_progress(tmp_path) is True
+    content = read_state(tmp_path, "PROGRESS.md")
+    assert "## Decisions d'Architecture" in content
+    assert "(rien)" in content
+
+
+def test_repair_progress_noop_when_valid(tmp_path: Path):
+    init_project_state(tmp_path)
+    before = read_state(tmp_path, "PROGRESS.md")
+
+    assert repair_progress(tmp_path) is False
+    assert read_state(tmp_path, "PROGRESS.md") == before
+
+
+def test_repair_progress_missing_file_is_noop(tmp_path: Path):
+    assert repair_progress(tmp_path) is False
+
+
+# --- Compaction d'ARCHITECTURE.md (cdc §4.2) -----------------------------------
+
+
+def test_compact_architecture_compacts_old_entries(tmp_path: Path):
+    init_project_state(tmp_path)
+    header = "# Decisions d'Architecture\n\n## Decisions\n\n"
+    entries = [
+        f"### Decision {i}\n"
+        + "\n".join(
+            f"- point {j} : justification assez longue pour occuper de la place"
+            for j in range(4)
+        )
+        for i in range(20)
+    ]
+    original = header + "\n\n".join(entries) + "\n"
+    write_state(tmp_path, "ARCHITECTURE.md", original)
+
+    changed = compact_architecture(tmp_path, max_chars=500)
+
+    assert changed is True
+    content = read_state(tmp_path, "ARCHITECTURE.md")
+    assert "## Historique compacte" in content
+    # Les entrees recentes sont conservees intactes...
+    assert "point 0 : justification assez longue" in content
+    # ... les plus anciennes existent encore, compactees en une ligne.
+    assert "Decision 19" in content
+    assert len(content) < len(original)
+
+
+def test_compact_architecture_noop_under_budget(tmp_path: Path):
+    init_project_state(tmp_path)
+    write_state(
+        tmp_path,
+        "ARCHITECTURE.md",
+        "# Decisions d'Architecture\n\n## Decisions\n\n- Decision 1 : stack Python\n",
+    )
+
+    assert compact_architecture(tmp_path, max_chars=4000) is False
+
+
+def test_compact_architecture_env_default(tmp_path: Path, monkeypatch):
+    init_project_state(tmp_path)
+    monkeypatch.setenv("DEBUILDER_ARCH_MAX_CHARS", "200")
+    header = "# Decisions d'Architecture\n\n## Decisions\n\n"
+    entries = [f"- Decision {i} : description {i}" for i in range(30)]
+    write_state(tmp_path, "ARCHITECTURE.md", header + "\n\n".join(entries) + "\n")
+
+    assert compact_architecture(tmp_path) is True
+    assert "## Historique compacte" in read_state(tmp_path, "ARCHITECTURE.md")
 
 
 # --- Hook pre-commit de tests ----------------------------------------------
