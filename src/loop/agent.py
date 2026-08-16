@@ -39,6 +39,7 @@ from src.core.git import (
     tag_iteration,
 )
 from src.core.iterations import append_entry, read_entries
+from src.core.loop_status import write_heartbeat
 from src.core.secrets import sanitize_text
 from src.utils.task_parser import all_boxes_checked, parse_checkboxes, parse_task
 from src.utils.test_results import resolve_test_command, run_test_gate
@@ -262,6 +263,7 @@ def run_iteration(
             spec_md=spec_md,
             gate_state=_gate_state_summary(target_dir),
         )
+        _write_phase(iteration_number, "plan")
         _log("[agent] Session Plan (lecture seule)...")
         plan_started = time.monotonic()
         plan_completed = _run_opencode(
@@ -317,6 +319,7 @@ def run_iteration(
                 resources_md=read_state(target_dir, "RESOURCES_NEEDED.md"),
                 recovery_md=_recovery_section(target_dir),
             )
+            _write_phase(iteration_number, "implement")
             _log("[agent] Session Implement...")
             implement_started = time.monotonic()
             completed = _run_opencode(target_dir, implement_prompt, model=model)
@@ -873,6 +876,7 @@ def _run_review_session(
         finished_md=finished_md,
         progress_md=progress_md,
     )
+    _write_phase(_env_iteration_number(), "review")
     _log("[agent] Session Review (lecture seule)...")
     review_started = time.monotonic()
     completed = _run_opencode(target_dir, prompt, model=model, read_only=True)
@@ -1796,6 +1800,19 @@ def _handle_barriers(target_dir: Path, barrier_files: list[Path]) -> None:
 
 def _log(message: str) -> None:
     print(message, flush=True)
+
+
+def _write_phase(iteration_number: int, phase: str) -> None:
+    """Ecrit la phase courante dans le battement de coeur du dashboard.
+
+    Permet a l'interface d'afficher si l'agent est en planification,
+    implementation ou revue. Jamais bloquant : une erreur d'ecriture
+    (permissions, disque plein) ne doit pas faire echouer l'iteration.
+    """
+    try:
+        write_heartbeat(iteration_number, phase)
+    except OSError:
+        pass
 
 
 def _timestamp() -> str:

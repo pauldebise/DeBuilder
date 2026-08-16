@@ -193,6 +193,9 @@ def _mission_completed(target_dir: Path) -> bool:
 def _heartbeat_fields(heartbeat: dict) -> dict:
     """Champs communs issus du battement de coeur (iteration, anciennete)."""
     fields = {"iteration": heartbeat.get("iteration", 0)}
+    phase = heartbeat.get("phase")
+    if phase:
+        fields["phase"] = phase
     updated_at = heartbeat.get("updated_at")
     if isinstance(updated_at, (int, float)):
         fields["since_seconds"] = max(0, int(time.time() - updated_at))

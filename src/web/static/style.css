@@ -54,9 +54,7 @@ body {
   font-size: 0.78rem;
   border: 1px solid var(--border);
   color: var(--text-muted);
-}
-
-.loop-badge.ok {
+}.loop-badge.ok {
   background: rgba(63, 185, 80, 0.15);
   border-color: #3fb950;
   color: #7fe0ab;
@@ -76,6 +74,33 @@ body {
 
 .loop-badge.muted {
   color: var(--text-muted);
+}
+
+.phase-badge {
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.phase-badge.plan {
+  background: rgba(88, 166, 255, 0.12);
+  border-color: #58a6ff;
+  color: #a5c8ff;
+}
+
+.phase-badge.implement {
+  background: rgba(63, 185, 80, 0.15);
+  border-color: #3fb950;
+  color: #7fe0ab;
+}
+
+.phase-badge.review {
+  background: rgba(245, 166, 35, 0.12);
+  border-color: var(--warning);
+  color: #ffd68a;
 }
 
 .screen {

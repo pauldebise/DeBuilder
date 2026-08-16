@@ -192,6 +192,25 @@ function renderLoopStatus(status) {
   el.textContent = cfg.text(status);
 }
 
+const PHASE_LABELS = {
+  plan: { text: "Planification", cls: "plan" },
+  implement: { text: "Implémentation", cls: "implement" },
+  review: { text: "Revue", cls: "review" },
+};
+
+function renderPhaseBadge(status) {
+  const el = qs("loop-phase");
+  if (!status || status.state !== "active" || !PHASE_LABELS[status.phase]) {
+    el.classList.add("hidden");
+    return;
+  }
+  const cfg = PHASE_LABELS[status.phase];
+  el.classList.remove("hidden");
+  el.classList.remove("plan", "implement", "review");
+  el.classList.add(cfg.cls);
+  el.textContent = cfg.text;
+}
+
 function renderCoverage(coverage) {
   const fill = qs("coverage-fill");
   const label = qs("coverage-label");
@@ -240,6 +259,7 @@ async function refreshDashboard() {
   const data = await resp.json();
 
   renderLoopStatus(data.loop_status);
+  renderPhaseBadge(data.loop_status);
   renderMissionBanner(data.loop_status);
   renderCoverage(data.coverage);
   renderMarkdownInto("activity-text", data.activity_text);
