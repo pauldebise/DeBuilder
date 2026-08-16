@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from src.core import log_summarizer
-from src.core.log_summarizer import summarize_logs
+from src.core.log_summarizer import summarize_logs, synthesize_progress_entry
 
 
 @pytest.fixture(autouse=True)
@@ -169,3 +169,88 @@ def test_secrets_never_sent_to_llm(monkeypatch):
     summarize_logs(raw_log, cache_key="sanitize-key")
 
     assert "sk-real-secret-999999" not in captured["sent_content"]
+
+
+# --- Synthese d'entree PROGRESS.md (cdc §4.3) ----------------------------------
+
+
+def test_synthesize_progress_entry_returns_none_without_provider():
+    assert synthesize_progress_entry("commits", "transcript") is None
+
+
+def test_synthesize_progress_entry_uses_llm(monkeypatch):
+    os.environ["DEBUILDER_MODEL"] = "deepseek/deepseek-chat"
+    os.environ["DEEPSEEK_API_KEY"] = "sk-test-key-1234567890"
+
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["content"] = json["messages"][-1]["content"]
+        captured["system"] = json["messages"][0]["content"]
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "- **Action realisee** : login ajoute\n- **Resultat** : OK\n- **Problemes rencontres** : aucun\n- **Solutions envisagees** : suite\n"
+                            }
+                        }
+                    ]
+                }
+
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    entry = synthesize_progress_entry(
+        "a1b2c3 feat: add login", "dernieres lignes du transcript"
+    )
+
+    assert "Action realisee" in entry
+    assert "Commits recents" in captured["content"]
+    assert "feat: add login" in captured["content"]
+    assert "Problemes rencontres" in captured["system"]
+
+
+def test_synthesize_progress_entry_none_on_llm_failure(monkeypatch):
+    os.environ["DEBUILDER_MODEL"] = "openai/gpt-5.2-codex"
+    os.environ["OPENAI_API_KEY"] = "sk-test-key-1234567890"
+
+    def failing_post(*args, **kwargs):
+        raise httpx.ConnectError("network unreachable")
+
+    monkeypatch.setattr(httpx, "post", failing_post)
+
+    assert synthesize_progress_entry("x", "y") is None
+
+
+def test_synthesize_progress_entry_sanitizes_secrets(monkeypatch):
+    os.environ["DEBUILDER_MODEL"] = "deepseek/deepseek-chat"
+    os.environ["DEEPSEEK_API_KEY"] = "sk-real-secret-999999"
+
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["content"] = json["messages"][-1]["content"]
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"choices": [{"message": {"content": "entree synthetisee"}}]}
+
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    synthesize_progress_entry(
+        "git log", "Authorization: Bearer sk-real-secret-999999\n"
+    )
+
+    assert "sk-real-secret-999999" not in captured["content"]

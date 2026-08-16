@@ -140,6 +140,34 @@ def status_files(repo_dir: Path) -> list[str]:
     return files
 
 
+def recent_changes(repo_dir: Path, commits: int = 5) -> str:
+    """Contexte des commits recents (``git log --stat``).
+
+    Source factuelle pour la synthese LLM de l'entree PROGRESS.md (cdc
+    §4.3) : les petits commits de sous-tache poses par la session
+    Implement decrivent precisement le travail de l'iteration.
+
+    Args:
+        repo_dir: Chemin du depot Git cible.
+        commits: Nombre de commits a inclure.
+
+    Returns:
+        Sortie de ``git log`` (une ligne par commit + stat), ou chaine
+        vide si le depot n'a pas de commit.
+    """
+    result = _run(
+        repo_dir,
+        "log",
+        f"-n{commits}",
+        "--oneline",
+        "--stat",
+        "--no-decorate",
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
 def rollback_last(repo_dir: Path) -> bool:
     """Annule le dernier commit (git reset --hard HEAD~1).
 

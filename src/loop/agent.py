@@ -19,15 +19,24 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.circuit_breaker import CircuitBreaker, _notify_webhook
+from src.core.log_summarizer import synthesize_progress_entry
 from src.core.state import (
     clear_suggestions,
+    compact_architecture,
     is_done,
     read_state,
+    repair_progress,
     touch_done,
     update_progress,
     write_state,
 )
-from src.core.git import head_commit, stage_and_commit_all, status_files, tag_iteration
+from src.core.git import (
+    head_commit,
+    recent_changes,
+    stage_and_commit_all,
+    status_files,
+    tag_iteration,
+)
 from src.core.iterations import append_entry, read_entries
 from src.core.secrets import sanitize_text
 from src.utils.task_parser import all_boxes_checked, parse_checkboxes, parse_task
@@ -57,12 +66,6 @@ _OPENCODE_INACTIVITY_TIMEOUT_SECONDS = int(
 _OPENCODE_MAX_SECONDS = int(
     os.environ.get("DEBUILDER_OPENCODE_MAX_SECONDS", str(3 * 3600))
 )
-
-# Longueur max du fallback ecrit dans PROGRESS.md quand l'agent ne l'a
-# pas mis a jour lui-meme (cf. _run_implement_post_steps) : la sortie
-# brute complete est deja dans OPENCODE_LOG.txt, l'injecter en entier
-# ferait regonfler indefiniment le prompt des iterations suivantes.
-_MAX_FALLBACK_PROGRESS_CHARS = 4000
 
 # OpenCode n'expose l'outil `websearch` que si le fournisseur du modele
 # est `opencode` (Zen), ou si un backend de recherche est active par
@@ -222,6 +225,13 @@ def run_iteration(
     breaker = CircuitBreaker()
     _maybe_pause(breaker, target_dir)
     model = _select_model(breaker)
+
+    # Reparation deterministe de la memoire persistante (cdc §4.1) :
+    # un PROGRESS.md malforme (separateur absent, section tronquee)
+    # est reconstruit depuis le template AVANT toute lecture, sans
+    # demander a l'agent de reparer.
+    if repair_progress(target_dir):
+        _log("[agent] PROGRESS.md malforme : repare depuis le template.")
 
     progress_before = read_state(target_dir, "PROGRESS.md")
     suggestions_md = read_state(target_dir, "SUGGESTIONS.md")
@@ -509,16 +519,25 @@ def _run_implement_post_steps(
     else:
         _clear_gate_failure(target_dir)
 
-    # Fallback : si l'agent n'a pas mis a jour PROGRESS.md lui-meme
-    # (etape obligatoire de la session Implement), un extrait tronque
-    # de sa sortie est consigne en garde-fou (phase 7 le remplacera
-    # par un resume LLM).
+    # Fallback de mise a jour memoire (cdc §4.3) : si l'agent n'a pas
+    # mis a jour PROGRESS.md lui-meme (etape obligatoire de la session
+    # Implement), l'entree est synthetisee par le LLM a partir des
+    # commits git recents et de la fin du transcript — JAMAIS le stdout
+    # brut injecte tel quel. Sur echec de la synthese, repli sur une
+    # entree heuristique structuree.
     if completed.stdout.strip():
         progress_after = read_state(target_dir, "PROGRESS.md")
         if progress_after == progress_before:
-            update_progress(
-                target_dir, completed.stdout.strip()[-_MAX_FALLBACK_PROGRESS_CHARS:]
-            )
+            entry = _synthesize_progress_entry(target_dir)
+            if not entry:
+                entry = _heuristic_progress_entry(completed)
+            update_progress(target_dir, entry)
+
+    # Budget de taille d'ARCHITECTURE.md (cdc §4.2) : les entrees les
+    # plus anciennes sont compactees pour ne pas gonfler le prompt des
+    # iterations suivantes.
+    if compact_architecture(target_dir):
+        _log("[agent] ARCHITECTURE.md compacte (budget de taille).")
 
     # Gate de tests deterministe (TASK.md > AGENTS.md > env).
     if result.failure_type == "":
@@ -912,6 +931,43 @@ def _is_no_op(changed_files: list[str]) -> bool:
         return True
     return all(
         name in _STATE_FILES or name.endswith(".lock") for name in changed_files
+    )
+
+
+def _synthesize_progress_entry(target_dir: Path) -> str | None:
+    """Synthese LLM de l'entree PROGRESS.md (repli cdc §4.3).
+
+    Entree = commits git recents (source factuelle des sous-taches) +
+    fin du transcript. Jamais le stdout brut.
+
+    Args:
+        target_dir: Repertoire du projet cible.
+
+    Returns:
+        Entree Markdown structuree, ou None si la synthese est
+        indisponible.
+    """
+    try:
+        return synthesize_progress_entry(
+            git_context=recent_changes(target_dir),
+            transcript_tail=read_log_tail(target_dir, "OPENCODE_LOG.txt", 200),
+        )
+    except Exception as exc:
+        _log(f"[agent] Synthese LLM de PROGRESS.md indisponible : {exc}")
+        return None
+
+
+def _heuristic_progress_entry(completed: subprocess.CompletedProcess) -> str:
+    """Repli heuristique : entree structuree sans contenu de sortie brut.
+
+    Ne recopie jamais le stdout : il reste consultable dans
+    OPENCODE_LOG.txt, et ne doit pas gonfler les prompts futurs.
+    """
+    return (
+        f"- **Action realisee** : Iteration terminee (code {completed.returncode})\n"
+        f"- **Resultat** : Non consigne par l'agent (pas de mise a jour de PROGRESS.md)\n"
+        f"- **Problemes rencontres** : Aucun detecte par la boucle\n"
+        f"- **Solutions envisagees** : Consulter OPENCODE_LOG.txt pour le detail de l'iteration.\n"
     )
 
 

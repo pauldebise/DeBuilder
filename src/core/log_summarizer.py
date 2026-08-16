@@ -33,6 +33,19 @@ _SYSTEM_PROMPT = (
     "de cle API, token ou secret meme si tu en vois un fragment."
 )
 
+_PROGRESS_SYSTEM_PROMPT = (
+    "Tu rediges l'entree de journal d'une iteration d'un agent de "
+    "developpement autonome, en Markdown strict, en francais sans accents "
+    "ni caracteres speciaux. Quatre puces exactement :\n"
+    "- **Action realisee** : ...\n"
+    "- **Resultat** : ...\n"
+    "- **Problemes rencontres** : ...\n"
+    "- **Solutions envisagees** : ...\n"
+    "Base-toi uniquement sur le contexte fourni (commits git recents et fin "
+    "du transcript). Reste factuel et bref : une phrase par puce. Ne "
+    "mentionne jamais de cle API, token ou secret."
+)
+
 # Fournisseurs opencode connus (cf. src/gui/config.py) : la cle et le
 # modele sont deja valides au demarrage de la session, on les reutilise
 # tels quels plutot que de deviner un identifiant de modele "mini" qui
@@ -126,10 +139,7 @@ def _summarize_with_llm(raw_log: str) -> tuple[str | None, str | None]:
     clean_log = sanitize_text(raw_log)[-_MAX_LOG_CHARS:]
 
     try:
-        if provider["kind"] == "anthropic":
-            text = _call_anthropic(provider, clean_log)
-        else:
-            text = _call_openai_compatible(provider, clean_log)
+        text = _chat(provider, _SYSTEM_PROMPT, clean_log)
     except httpx.HTTPStatusError as exc:
         return None, f"erreur HTTP {exc.response.status_code}"
     except httpx.HTTPError as exc:
@@ -147,6 +157,51 @@ def _summarize_with_llm(raw_log: str) -> tuple[str | None, str | None]:
     return text, None
 
 
+def synthesize_progress_entry(git_context: str, transcript_tail: str) -> str | None:
+    """Synthese LLM d'une entree PROGRESS.md structuree (cdc §4.3).
+
+    Repli de la boucle quand la session Implement n'a pas mis a jour
+    PROGRESS.md elle-meme : l'entree est generee par le LLM a partir
+    des commits git recents et de la fin du transcript — jamais a
+    partir du stdout brut injecte tel quel.
+
+    Args:
+        git_context: Sortie de ``git log --stat`` (commits recents).
+        transcript_tail: Fin du transcript d'OpenCode (deja sanitisée
+            a la capture).
+
+    Returns:
+        L'entree Markdown structuree, ou None si aucun provider n'est
+        configure ou si l'appel echoue (le repli heuristique prend
+        alors le relais).
+    """
+    provider = _active_provider()
+    if not provider:
+        return None
+
+    user_content = sanitize_text(
+        "## Commits recents de l'iteration\n\n"
+        + (git_context or "(aucun commit)")
+        + "\n\n## Fin du transcript\n\n"
+        + (transcript_tail or "(sortie vide)")
+    )[-(2 * _MAX_LOG_CHARS):]
+
+    try:
+        text = _chat(provider, _PROGRESS_SYSTEM_PROMPT, user_content)
+    except (httpx.HTTPError, KeyError, ValueError, IndexError):
+        return None
+    if not text or not text.strip():
+        return None
+    return text.strip()
+
+
+def _chat(provider: dict, system_prompt: str, user_content: str) -> str:
+    """Un tour de chat avec le fournisseur de l'agent (openai ou anthropic)."""
+    if provider["kind"] == "anthropic":
+        return _call_anthropic(provider, user_content, system_prompt)
+    return _call_openai_compatible(provider, user_content, system_prompt)
+
+
 def _active_provider() -> dict | None:
     model = os.environ.get("DEBUILDER_MODEL", "")
     if "/" not in model:
@@ -161,7 +216,9 @@ def _active_provider() -> dict | None:
     return {**entry, "api_key": api_key, "model": model_name}
 
 
-def _call_openai_compatible(provider: dict, clean_log: str) -> str | None:
+def _call_openai_compatible(
+    provider: dict, clean_log: str, system_prompt: str = _SYSTEM_PROMPT
+) -> str | None:
     resp = httpx.post(
         provider["url"],
         headers={
@@ -171,7 +228,7 @@ def _call_openai_compatible(provider: dict, clean_log: str) -> str | None:
         json={
             "model": provider["model"],
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": clean_log},
             ],
             "temperature": 0.3,
@@ -182,7 +239,9 @@ def _call_openai_compatible(provider: dict, clean_log: str) -> str | None:
     return resp.json()["choices"][0]["message"]["content"].strip()
 
 
-def _call_anthropic(provider: dict, clean_log: str) -> str | None:
+def _call_anthropic(
+    provider: dict, clean_log: str, system_prompt: str = _SYSTEM_PROMPT
+) -> str | None:
     resp = httpx.post(
         provider["url"],
         headers={
@@ -196,7 +255,7 @@ def _call_anthropic(provider: dict, clean_log: str) -> str | None:
             # possible) ; une valeur large ici n'est qu'un garde-fou, le
             # prompt systeme impose deja un resume tres court.
             "max_tokens": 1024,
-            "system": _SYSTEM_PROMPT,
+            "system": system_prompt,
             "messages": [{"role": "user", "content": clean_log}],
         },
         timeout=_TIMEOUT,

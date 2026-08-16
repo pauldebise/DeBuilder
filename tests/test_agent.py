@@ -323,14 +323,12 @@ def test_run_iteration_stops_on_done(tmp_path, monkeypatch):
     assert result.continue_loop is False
 
 
-def test_run_iteration_updates_progress(tmp_path, monkeypatch):
+def test_run_iteration_synthesizes_progress_via_llm(tmp_path, monkeypatch):
     import src.loop.agent as agent_mod
 
     target_dir = tmp_path / "project"
     init_project_state(target_dir, instructions="Test project")
 
-    # La session Implement ne met rien a jour : le fallback de la
-    # boucle consigne alors un extrait de sa sortie dans PROGRESS.md.
     def _implement_passthrough(target_dir, prompt, model=None, read_only=False):
         return subprocess.CompletedProcess(
             args=["opencode"],
@@ -338,6 +336,16 @@ def test_run_iteration_updates_progress(tmp_path, monkeypatch):
             stdout="- **Action** : Created main.py\n- **Resultat** : Works",
             stderr="",
         )
+
+    synthesized = (
+        "- **Action realisee** : main.py cree\n"
+        "- **Resultat** : OK\n"
+        "- **Problemes rencontres** : aucun\n"
+        "- **Solutions envisagees** : suite\n"
+    )
+    monkeypatch.setattr(
+        agent_mod, "synthesize_progress_entry", lambda **kwargs: synthesized
+    )
 
     mock, _ = _make_dual_mock(_plan_ok, _implement_passthrough)
     monkeypatch.setattr(agent_mod, "_run_opencode", mock)
@@ -347,7 +355,36 @@ def test_run_iteration_updates_progress(tmp_path, monkeypatch):
     assert result.continue_loop is True
 
     progress = read_state(target_dir, "PROGRESS.md")
-    assert "Created main.py" in progress
+    assert "main.py cree" in progress
+    # La sortie brute n'est JAMAIS injectee telle quelle.
+    assert "Created main.py" not in progress
+
+
+def test_run_iteration_heuristic_fallback_without_raw_stdout(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test project")
+
+    def _implement_passthrough(target_dir, prompt, model=None, read_only=False):
+        return subprocess.CompletedProcess(
+            args=["opencode"],
+            returncode=0,
+            stdout="sortie brute tres verbeuse a ne jamais injecter",
+            stderr="",
+        )
+
+    monkeypatch.setattr(agent_mod, "synthesize_progress_entry", lambda **kwargs: None)
+
+    mock, _ = _make_dual_mock(_plan_ok, _implement_passthrough)
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
+
+    run_iteration(target_dir)
+
+    progress = read_state(target_dir, "PROGRESS.md")
+    assert "Non consigne par l'agent" in progress
+    assert "sortie brute tres verbeuse" not in progress
 
 
 def test_run_iteration_survives_unexpected_exception(tmp_path, monkeypatch):
@@ -1225,3 +1262,28 @@ def test_record_cap_stop_writes_progress_and_webhook(tmp_path, monkeypatch):
 
     assert "Arret par cap dur" in read_state(target_dir, "PROGRESS.md")
     assert webhook_calls[0]["event"] == "cap_reached"
+
+
+# --- Fiabilite de la memoire persistante (cdc §4.1) ------------------------------
+
+
+def test_run_iteration_repairs_corrupt_progress(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+    write_state(
+        target_dir,
+        "PROGRESS.md",
+        "# Journal de Progression\n\n## Derniere Iteration (N)\n- Action X\n",
+    )
+
+    mock, _ = _dual_ok()
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+
+    run_iteration(target_dir, iteration_number=1)
+
+    content = read_state(target_dir, "PROGRESS.md")
+    assert "## Prochaine Sous-Tache Prevue" in content
+    assert "## Decisions d'Architecture" in content
