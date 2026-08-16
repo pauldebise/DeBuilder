@@ -155,6 +155,32 @@ def test_list_tags_requires_target_dir():
     assert resp.status_code == 400
 
 
+# --- Circuit breaker (dashboard) ---------------------------------------------
+
+
+def test_dashboard_exposes_circuit_breaker_field(tmp_path: Path):
+    resp = client.get("/api/dashboard", params={"target_dir": str(tmp_path)})
+
+    assert resp.status_code == 200
+    assert resp.json()["circuit_breaker"]["tripped"] is False
+
+
+def test_dashboard_alerts_when_breaker_tripped(tmp_path: Path, monkeypatch):
+    from src.core.circuit_breaker import CircuitBreaker
+
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("DEBUILDER_STATE_DIR", str(state_dir))
+    breaker = CircuitBreaker(state_dir=state_dir)
+    for _ in range(breaker.max_failures):
+        breaker.record_failure("api")
+
+    resp = client.get("/api/dashboard", params={"target_dir": str(tmp_path / "project")})
+
+    data = resp.json()
+    assert data["circuit_breaker"]["tripped"] is True
+    assert "Circuit breaker" in data["system_alerts"]
+
+
 # --- Barrieres ---------------------------------------------------------------
 
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Query
 
+from src.core.circuit_breaker import load_breaker_state
 from src.core.log_summarizer import summarize_logs
 from src.core.state import read_state
 from src.utils.markdown_parser import parse_alerts, parse_benchmarks, parse_progress
@@ -26,6 +27,7 @@ _NO_SESSION_DASHBOARD = {
     "progress_text": "*Aucune session active.*",
     "benchmarks": [],
     "alerts_text": "*Aucune alerte.*",
+    "circuit_breaker": None,
 }
 
 
@@ -75,6 +77,20 @@ def _get_dashboard_data(target_dir: Path) -> dict:
             )
         sys_alert_text = "\n\n".join(lines)
 
+    breaker_state = load_breaker_state()
+    if breaker_state.get("tripped"):
+        breaker_alert = (
+            "> :warning: **Circuit breaker API ouvert** : "
+            f"{breaker_state['api_failures']} echec(s) API, pause en cours "
+            f"(~{int(breaker_state['pause_remaining_seconds'])}s restantes)."
+        )
+        if breaker_state.get("fallback_model"):
+            breaker_alert += f" Bascule sur le modele de secours `{breaker_state['fallback_model']}`."
+        if sys_alert_text:
+            sys_alert_text = breaker_alert + "\n\n" + sys_alert_text
+        else:
+            sys_alert_text = breaker_alert
+
     progress_data = parse_progress(progress_md)
     latest = progress_data.get("latest_iteration", "*En attente...*")
     next_task = progress_data.get("next_task", "")
@@ -108,4 +124,5 @@ def _get_dashboard_data(target_dir: Path) -> dict:
         "progress_text": progress_text or "*En attente de la premiere iteration...*",
         "benchmarks": benchmarks,
         "alerts_text": alerts_text,
+        "circuit_breaker": breaker_state,
     }
