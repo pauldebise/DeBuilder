@@ -133,9 +133,19 @@ if tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
     exit 0
 fi
 
-tmux new-session -d -s "${SESSION_NAME}" -c "${SCRIPT_DIR}" \
-    "${PYTHON_BIN} -m src.web.app"
+# DEBUILDER_AUTO_RESTART=1 : le processus web est relance
+# automatiquement par tmux s'il meurt (crash, OOM). Utile sur un pod
+# sans surveillance ; sans cette option, une seule mort du processus
+# web laisse la session tmux vide jusqu'a intervention manuelle.
+if [ "${DEBUILDER_AUTO_RESTART:-0}" = "1" ]; then
+    tmux new-session -d -s "${SESSION_NAME}" -c "${SCRIPT_DIR}" \
+        "while true; do ${PYTHON_BIN} -m src.web.app || true; echo '[DeBuilder] Processus web arrete, redemarrage dans 5s...'; sleep 5; done"
+    echo "[DeBuilder] Demarre en arriere-plan (port ${DEBUILDER_PORT}, auto-redemarrage actif)." >&2
+else
+    tmux new-session -d -s "${SESSION_NAME}" -c "${SCRIPT_DIR}" \
+        "${PYTHON_BIN} -m src.web.app"
+    echo "[DeBuilder] Demarre en arriere-plan (port ${DEBUILDER_PORT})." >&2
+fi
 
-echo "[DeBuilder] Demarre en arriere-plan (port ${DEBUILDER_PORT})." >&2
 echo "[DeBuilder] Pour attacher:  tmux attach-session -t ${SESSION_NAME}" >&2
 echo "[DeBuilder] Pour arreter:   tmux kill-session -t ${SESSION_NAME}" >&2

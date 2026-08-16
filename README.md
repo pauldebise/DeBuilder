@@ -79,7 +79,7 @@ tmux attach -t debuilder   # rattacher la session
 tmux kill-session -t debuilder && ./start.sh   # relancer après une mise à jour du code
 ```
 
-
+Sur un pod sans surveillance, `DEBUILDER_AUTO_RESTART=1 ./start.sh` relance automatiquement le processus web s'il meurt (crash, OOM). Si la boucle agent elle-même s'arrête, rattachez-vous à la session tmux (`tmux attach -t debuilder`) et relancez une session depuis l'interface : la boucle ne tourne pas dans tmux, elle est lancée par le serveur web.
 
 L'interface est ensuite disponible sur `http://<host>:7680` (port configurable via `DEBUILDER_PORT`).
 
