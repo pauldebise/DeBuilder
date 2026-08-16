@@ -5,11 +5,15 @@ import subprocess
 from pathlib import Path
 
 from src.loop.agent import (
+    IterationResult,
     _build_prompt,
+    _classify_failure,
+    _is_no_op,
     _rotate_log_if_large,
     _web_tools_env,
     run_iteration,
 )
+from src.core.iterations import read_entries
 from src.core.state import init_project_state, is_done, read_state, touch_done, write_state
 
 
@@ -120,7 +124,7 @@ def test_run_iteration_stops_on_done(tmp_path, monkeypatch):
     touch_done(target_dir)
 
     result = run_iteration(target_dir)
-    assert result is False
+    assert result.continue_loop is False
 
 
 def test_run_iteration_updates_progress(tmp_path, monkeypatch):
@@ -133,7 +137,7 @@ def test_run_iteration_updates_progress(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
 
     result = run_iteration(target_dir)
-    assert result is True
+    assert result.continue_loop is True
 
     progress = read_state(target_dir, "PROGRESS.md")
     assert "Created main.py" in progress
@@ -167,10 +171,117 @@ def test_run_iteration_survives_unexpected_exception(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
 
     result = run_iteration(target_dir)
-    assert result is True
+    assert result.continue_loop is True
 
     progress = read_state(target_dir, "PROGRESS.md")
     assert "ECHEC" in progress
+
+
+def test_run_iteration_returns_structured_result(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_run_opencode)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
+
+    result = run_iteration(target_dir, iteration_number=7)
+
+    assert isinstance(result, IterationResult)
+    assert result.exit_code == 0
+    assert result.failure_type == ""
+    assert result.duration_seconds >= 0
+    assert result.continue_loop is True
+    # Compat avec l'ancien retour booleen.
+    assert bool(result) is True
+
+
+def test_run_iteration_writes_journal_entry(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_run_opencode)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
+
+    run_iteration(target_dir, iteration_number=7)
+
+    entries = read_entries(target_dir)
+    assert len(entries) == 1
+    assert entries[0]["iteration"] == 7
+    assert entries[0]["exit_code"] == 0
+    assert entries[0]["failure_type"] == ""
+    assert "timestamp" in entries[0]
+
+
+def test_run_iteration_classifies_timeout(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+
+    def mock_timeout(target_dir, prompt):
+        return subprocess.CompletedProcess(
+            args=["opencode"], returncode=-1, stdout="", stderr="Timeout watchdog"
+        )
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock_timeout)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
+
+    result = run_iteration(target_dir, iteration_number=3)
+
+    assert result.exit_code == -1
+    assert result.failure_type == "timeout"
+    entries = read_entries(target_dir)
+    assert entries[0]["failure_type"] == "timeout"
+
+
+def test_run_iteration_classifies_api_failure(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+
+    def mock_api_error(target_dir, prompt):
+        return subprocess.CompletedProcess(
+            args=["opencode"],
+            returncode=1,
+            stdout="",
+            stderr="429 too many requests: rate limit depasse",
+        )
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock_api_error)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
+
+    result = run_iteration(target_dir, iteration_number=4)
+
+    assert result.failure_type == "api"
+
+
+def test_classify_failure_types():
+    ok = subprocess.CompletedProcess(args=["x"], returncode=0, stdout="done", stderr="")
+    timeout = subprocess.CompletedProcess(args=["x"], returncode=-1, stdout="", stderr="")
+    api = subprocess.CompletedProcess(
+        args=["x"], returncode=1, stdout="", stderr="invalid_api_key"
+    )
+    other = subprocess.CompletedProcess(
+        args=["x"], returncode=2, stdout="", stderr="syntax error"
+    )
+
+    assert _classify_failure(ok) == ""
+    assert _classify_failure(timeout) == "timeout"
+    assert _classify_failure(api) == "api"
+    assert _classify_failure(other) == "error"
+
+
+def test_is_no_op():
+    assert _is_no_op([]) is True
+    assert _is_no_op(["PROGRESS.md"]) is True
+    assert _is_no_op(["PROGRESS.md", "BENCHMARKS.md", "SUGGESTIONS.md.lock"]) is True
+    assert _is_no_op(["src/main.py"]) is False
+    assert _is_no_op(["src/main.py", "PROGRESS.md"]) is False
 
 
 def test_rotate_log_if_large_truncates(tmp_path):

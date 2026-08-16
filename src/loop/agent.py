@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.state import (
@@ -22,7 +23,8 @@ from src.core.state import (
     read_state,
     update_progress,
 )
-from src.core.git import stage_and_commit_all
+from src.core.git import stage_and_commit_all, status_files
+from src.core.iterations import append_entry
 from src.core.secrets import sanitize_text
 from src.utils.text import strip_ansi
 
@@ -75,18 +77,85 @@ _WEBSEARCH_BACKEND_VARS = (
 
 _FALSY = {"0", "false", "no", "off"}
 
+# Motifs indiquant un echec lie a l'API/au fournisseur (cle epuisee,
+# quota, provider injoignable) plutot qu'a la tache elle-meme. Base de
+# la typologie partagee avec le circuit breaker (phase 3).
+_API_FAILURE_MOTIFS = (
+    "api key",
+    "invalid_api_key",
+    "authentication",
+    "unauthorized",
+    "insufficient_quota",
+    "rate limit",
+    "billing",
+    "quota",
+    "connection refused",
+    "connection error",
+    "http 401",
+    "http 403",
+    "http 429",
+    "401 unauthorized",
+    "403 forbidden",
+    "429 too many requests",
+)
 
-def run_iteration(target_dir: Path) -> bool:
+# Fichiers dont le changement ne constitue pas un travail reel sur le
+# projet : un diff limite a ces fichiers (ou vide) compte comme no-op.
+_STATE_FILES = {
+    "AGENTS.md",
+    "PROGRESS.md",
+    "BENCHMARKS.md",
+    "SUGGESTIONS.md",
+    "RESOURCES_NEEDED.md",
+    "DONE",
+}
+
+
+@dataclass
+class IterationResult:
+    """Resultat structure d'une iteration complete.
+
+    Remplace l'ancien retour booleen de ``run_iteration`` : la boucle
+    et le journal consomment les champs bruts, ``continue_loop`` (et
+    ``__bool__``) preservent la compat avec l'usage booleen.
+    """
+
+    exit_code: int = 0
+    failure_type: str = ""
+    duration_seconds: float = 0.0
+    changed_files: int = 0
+    no_op: bool = False
+    tests_passed: bool | None = None
+    continue_loop: bool = True
+
+    def __bool__(self) -> bool:
+        """Compat : ``bool(result)`` vaut l'ancien booleen de boucle."""
+        return self.continue_loop
+
+
+def run_iteration(
+    target_dir: Path,
+    iteration_number: int | None = None,
+) -> IterationResult:
     """Execute une iteration complete de l'agent.
 
     Args:
         target_dir: Repertoire du projet cible.
+        iteration_number: Numero de l'iteration courante (fourni par la
+            boucle ; defaut : variable ``DEBUILDER_ITERATION``).
 
     Returns:
-        True si l'agent doit continuer, False si arret demande.
+        Resultat structure de l'iteration.
     """
+    if iteration_number is None:
+        iteration_number = _env_iteration_number()
+
+    started = time.monotonic()
+    result = IterationResult()
+
     if is_done(target_dir):
-        return False
+        result.continue_loop = False
+        return result
 
     try:
         agents_md = read_state(target_dir, "AGENTS.md")
@@ -104,24 +173,36 @@ def run_iteration(target_dir: Path) -> bool:
         )
 
         _log(f"[agent] Lancement d'OpenCode...")
-        result = _run_opencode(target_dir, prompt)
-        _log(f"[agent] OpenCode termine (code={result.returncode})")
+        completed = _run_opencode(target_dir, prompt)
+        _log(f"[agent] OpenCode termine (code={completed.returncode})")
 
-        if result.returncode != 0 and result.stderr:
-            _log(f"[agent] Erreur OpenCode: {result.stderr[:500]}")
+        result.exit_code = completed.returncode
+        result.failure_type = _classify_failure(completed)
+
+        if completed.returncode != 0 and completed.stderr:
+            _log(f"[agent] Erreur OpenCode: {completed.stderr[:500]}")
 
         barrier_files = sorted(target_dir.glob("BARRIER_*"))
         if barrier_files:
             _log(f"[agent] {len(barrier_files)} barriere(s) detectee(s), mise en pause...")
             _handle_barriers(target_dir, barrier_files)
 
-        _update_state_files(target_dir, result, suggestions_md, progress_md)
+        _update_state_files(target_dir, completed, suggestions_md, progress_md)
     except Exception as exc:
         # Une iteration ne doit jamais tuer la boucle autonome : sur
         # un pod sans surveillance, un crash non rattrape ici arrete
         # l'agent de facon definitive jusqu'a intervention manuelle.
         _log(f"[agent] ERREUR inattendue pendant l'iteration : {exc}")
         _record_iteration_exception(target_dir, exc)
+        result.exit_code = 1
+        result.failure_type = "exception"
+
+    # Capture AVANT le commit de fin d'iteration : le diff de
+    # l'iteration (base de la detection de no-op, phase 6) doit
+    # refleter le travail de la session, pas le commit lui-meme.
+    changed = status_files(target_dir)
+    result.changed_files = len(changed)
+    result.no_op = _is_no_op(changed)
 
     committed, detail = stage_and_commit_all(target_dir, f"iteration {_timestamp()}")
     if not committed:
@@ -130,7 +211,76 @@ def run_iteration(target_dir: Path) -> bool:
             f"d'iteration: {sanitize_text(detail)[:500]}"
         )
 
-    return not is_done(target_dir)
+    result.duration_seconds = round(time.monotonic() - started, 3)
+    result.continue_loop = not is_done(target_dir)
+
+    _journal_iteration(target_dir, iteration_number, result)
+    return result
+
+
+def _env_iteration_number() -> int:
+    raw = os.environ.get("DEBUILDER_ITERATION", "0")
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
+def _classify_failure(result: subprocess.CompletedProcess) -> str:
+    """Classe la sortie d'OpenCode selon la typologie des echecs.
+
+    Args:
+        result: Processus OpenCode termine.
+
+    Returns:
+        "" (reussite), "timeout" (watchdog), "api" (fournisseur) ou
+        "error" (autre echec).
+    """
+    if result.returncode == 0:
+        return ""
+    if result.returncode == -1:
+        return "timeout"
+    detail = f"{result.stderr or ''} {result.stdout or ''}".lower()
+    if any(motif in detail for motif in _API_FAILURE_MOTIFS):
+        return "api"
+    return "error"
+
+
+def _is_no_op(changed_files: list[str]) -> bool:
+    """True si l'iteration n'a produit aucun changement de code.
+
+    Un diff vide, ou limite aux fichiers d'etat de DeBuilder, ne
+    constitue pas un travail reel sur le projet cible.
+
+    Args:
+        changed_files: Chemins retournes par ``git status --porcelain``.
+    """
+    if not changed_files:
+        return True
+    return all(
+        name in _STATE_FILES or name.endswith(".lock") for name in changed_files
+    )
+
+
+def _journal_iteration(
+    target_dir: Path,
+    iteration_number: int,
+    result: IterationResult,
+) -> None:
+    try:
+        append_entry(
+            target_dir,
+            {
+                "iteration": iteration_number,
+                "exit_code": result.exit_code,
+                "failure_type": result.failure_type,
+                "duration_seconds": result.duration_seconds,
+                "changed_files": result.changed_files,
+                "no_op": result.no_op,
+            },
+        )
+    except Exception as exc:
+        _log(f"[agent] ATTENTION: echec d'ecriture du journal d'iterations : {exc}")
 
 
 def _record_iteration_exception(target_dir: Path, exc: Exception) -> None:

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# `set -e` volontairement absent : un echec d'une iteration (OpenCode,
+# git, python) ne doit jamais tuer la boucle autonome. Chaque echec est
+# deja consigne par agent.py (PROGRESS.md, ITERATIONS.jsonl) et la
+# boucle ne s'arrete que sur fichier DONE ou cap dur (phase 4/6).
+set -uo pipefail
 
 DEBUILDER_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
 TARGET_DIR="${DEBUILDER_TARGET_DIR:-}"
@@ -28,17 +32,21 @@ export DEBUILDER_MODEL="${DEBUILDER_MODEL:-}"
 ITERATION=0
 while true; do
     ITERATION=$((ITERATION + 1))
+    export DEBUILDER_ITERATION="${ITERATION}"
     echo "[agent_loop] ========================================" >&2
     echo "[agent_loop] Iteration #${ITERATION} - $(date)" >&2
 
-    cd "${DEBUILDER_DIR}"
+    cd "${DEBUILDER_DIR}" || {
+        echo "[agent_loop] ERREUR: repertoire DeBuilder inaccessible, arret." >&2
+        exit 1
+    }
     if ! ${PYTHON_BIN} -c "
 import sys
 sys.path.insert(0, '${DEBUILDER_DIR}')
 from src.loop.agent import run_iteration
 from pathlib import Path
-cont = run_iteration(Path('${TARGET_DIR}'))
-sys.exit(0 if cont else 1)
+result = run_iteration(Path('${TARGET_DIR}'), iteration_number=${ITERATION})
+sys.exit(0 if result.continue_loop else 1)
 "; then
         echo "[agent_loop] Arret demande (fichier DONE ou erreur)." >&2
         break

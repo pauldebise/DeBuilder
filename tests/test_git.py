@@ -135,7 +135,7 @@ def test_ensure_gitignore_creates_entries(tmp_path: Path):
     ensure_gitignore(repo_dir)
 
     content = (repo_dir / ".gitignore").read_text()
-    for pattern in ["DONE", "BARRIER_*", "*.lock", "OPENCODE_LOG.txt"]:
+    for pattern in ["DONE", "BARRIER_*", "*.lock", "OPENCODE_LOG.txt", "ITERATIONS.jsonl"]:
         assert pattern in content
 
 

@@ -12,7 +12,13 @@ from pathlib import Path
 # Fichiers operationnels de DeBuilder : jamais des livrables du projet
 # cible, ne doivent donc jamais etre commites (DONE commite ferait
 # demarrer toute future session avec le kill-switch actif).
-_DEBUILDER_IGNORE_PATTERNS = ["DONE", "BARRIER_*", "*.lock", "OPENCODE_LOG.txt"]
+_DEBUILDER_IGNORE_PATTERNS = [
+    "DONE",
+    "BARRIER_*",
+    "*.lock",
+    "OPENCODE_LOG.txt",
+    "ITERATIONS.jsonl",
+]
 
 
 def _run(repo_dir: Path, *args: str) -> subprocess.CompletedProcess:
@@ -109,6 +115,29 @@ def stage_and_commit_all(repo_dir: Path, message: str) -> tuple[bool, str]:
             return push(repo_dir)
         return True, ""
     return True, ""
+
+
+def status_files(repo_dir: Path) -> list[str]:
+    """Liste les fichiers du depot cible avec des changements en cours.
+
+    Equivalent de `git status --porcelain` limite aux chemins.
+
+    Args:
+        repo_dir: Chemin du depot Git cible.
+
+    Returns:
+        Chemins des fichiers modifies/ajoutes/supprimes. Liste vide si
+        le depot est propre ou si le repertoire n'est pas un depot Git.
+    """
+    result = _run(repo_dir, "status", "--porcelain")
+    if result.returncode != 0:
+        return []
+    files: list[str] = []
+    for line in result.stdout.splitlines():
+        path = line[3:].strip().strip('"')
+        if path:
+            files.append(path)
+    return files
 
 
 def rollback_last(repo_dir: Path) -> bool:
