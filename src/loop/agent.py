@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.core.circuit_breaker import CircuitBreaker
 from src.core.state import (
     clear_suggestions,
     is_done,
@@ -164,6 +165,10 @@ def run_iteration(
         result.continue_loop = False
         return result
 
+    breaker = CircuitBreaker()
+    _maybe_pause(breaker, target_dir)
+    model = _select_model(breaker)
+
     try:
         agents_md = read_state(target_dir, "AGENTS.md")
         progress_md = read_state(target_dir, "PROGRESS.md")
@@ -180,7 +185,7 @@ def run_iteration(
         )
 
         _log(f"[agent] Lancement d'OpenCode...")
-        completed = _run_opencode(target_dir, prompt)
+        completed = _run_opencode(target_dir, prompt, model=model)
         _log(f"[agent] OpenCode termine (code={completed.returncode})")
 
         result.exit_code = completed.returncode
@@ -188,6 +193,14 @@ def run_iteration(
 
         if completed.returncode != 0 and completed.stderr:
             _log(f"[agent] Erreur OpenCode: {completed.stderr[:500]}")
+
+        # Alimente le circuit breaker avec le resultat de la session
+        # OpenCode uniquement (pas la gate de tests : un code qui ne
+        # passe pas les tests n'est pas une panne d'API).
+        if result.failure_type == "":
+            breaker.record_success()
+        else:
+            breaker.record_failure(result.failure_type)
 
         barrier_files = sorted(target_dir.glob("BARRIER_*"))
         if barrier_files:
@@ -203,6 +216,7 @@ def run_iteration(
         _record_iteration_exception(target_dir, exc)
         result.exit_code = 1
         result.failure_type = "exception"
+        breaker.record_failure("error")
 
     # Gate de tests deterministe : uniquement si la session s'est
     # terminee proprement (une session morte laisse le repo dans un
@@ -251,6 +265,45 @@ def _env_iteration_number() -> int:
         return 0
 
 
+def _select_model(breaker: CircuitBreaker) -> str:
+    """Choisit le modele a utiliser pour l'iteration.
+
+    Basculer sur ``DEBUILDER_MODEL_FALLBACK`` (si defini) tant que le
+    circuit breaker est ouvert, puis revenir au modele principal apres
+    un succes.
+
+    Args:
+        breaker: Etat du circuit breaker.
+
+    Returns:
+        Nom du modele opencode (ou chaine vide pour le defaut).
+    """
+    if breaker.use_fallback():
+        fallback = os.environ.get("DEBUILDER_MODEL_FALLBACK", "").strip()
+        _log(f"[agent] Circuit breaker ouvert : bascule sur le modele de secours {fallback}.")
+        return fallback
+    return os.environ.get("DEBUILDER_MODEL", "")
+
+
+def _maybe_pause(breaker: CircuitBreaker, target_dir: Path) -> None:
+    """Marque une pause si le circuit breaker est ouvert.
+
+    Dort par tranches courtes pour rester reactif au kill-switch
+    (creation du fichier DONE interrompt la pause).
+
+    Args:
+        breaker: Etat du circuit breaker.
+        target_dir: Repertoire du projet cible (pour le kill-switch).
+    """
+    remaining = breaker.pause_remaining()
+    while remaining > 0:
+        if is_done(target_dir):
+            return
+        step = min(5.0, remaining)
+        time.sleep(step)
+        remaining = breaker.pause_remaining()
+
+
 def _classify_failure(result: subprocess.CompletedProcess) -> str:
     """Classe la sortie d'OpenCode selon la typologie des echecs.
 
@@ -258,10 +311,12 @@ def _classify_failure(result: subprocess.CompletedProcess) -> str:
         result: Processus OpenCode termine.
 
     Returns:
-        "" (reussite), "timeout" (watchdog), "api" (fournisseur) ou
-        "error" (autre echec).
+        "" (reussite), "timeout" (watchdog), "api" (fournisseur),
+        "empty" (aucune sortie produite) ou "error" (autre echec).
     """
     if result.returncode == 0:
+        if not (result.stdout or "").strip():
+            return "empty"
         return ""
     if result.returncode == -1:
         return "timeout"
@@ -464,10 +519,15 @@ def _build_prompt(
     return "\n\n".join(parts)
 
 
-def _run_opencode(target_dir: Path, prompt: str) -> subprocess.CompletedProcess:
+def _run_opencode(
+    target_dir: Path,
+    prompt: str,
+    model: str | None = None,
+) -> subprocess.CompletedProcess:
     import shutil
 
-    model = os.environ.get("DEBUILDER_MODEL", "")
+    if model is None:
+        model = os.environ.get("DEBUILDER_MODEL", "")
     bin_path = shutil.which("opencode") or "/usr/local/bin/opencode"
 
     # Le prompt (AGENTS.md + PROGRESS.md + BENCHMARKS.md + ...) n'a

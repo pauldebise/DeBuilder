@@ -17,7 +17,7 @@ from src.core.iterations import read_entries
 from src.core.state import init_project_state, is_done, read_state, touch_done, write_state
 
 
-def _mock_run_opencode(target_dir, prompt):
+def _mock_run_opencode(target_dir, prompt, model=None):
     return subprocess.CompletedProcess(
         args=["opencode"],
         returncode=0,
@@ -164,7 +164,7 @@ def test_run_iteration_survives_unexpected_exception(tmp_path, monkeypatch):
     target_dir = tmp_path / "project"
     init_project_state(target_dir, instructions="Test")
 
-    def _boom(target_dir, prompt):
+    def _boom(target_dir, prompt, model=None):
         raise RuntimeError("panne inattendue")
 
     monkeypatch.setattr(agent_mod, "_run_opencode", _boom)
@@ -222,7 +222,7 @@ def test_run_iteration_classifies_timeout(tmp_path, monkeypatch):
     target_dir = tmp_path / "project"
     init_project_state(target_dir, instructions="Test")
 
-    def mock_timeout(target_dir, prompt):
+    def mock_timeout(target_dir, prompt, model=None):
         return subprocess.CompletedProcess(
             args=["opencode"], returncode=-1, stdout="", stderr="Timeout watchdog"
         )
@@ -244,7 +244,7 @@ def test_run_iteration_classifies_api_failure(tmp_path, monkeypatch):
     target_dir = tmp_path / "project"
     init_project_state(target_dir, instructions="Test")
 
-    def mock_api_error(target_dir, prompt):
+    def mock_api_error(target_dir, prompt, model=None):
         return subprocess.CompletedProcess(
             args=["opencode"],
             returncode=1,
@@ -269,11 +269,13 @@ def test_classify_failure_types():
     other = subprocess.CompletedProcess(
         args=["x"], returncode=2, stdout="", stderr="syntax error"
     )
+    empty = subprocess.CompletedProcess(args=["x"], returncode=0, stdout="", stderr="")
 
     assert _classify_failure(ok) == ""
     assert _classify_failure(timeout) == "timeout"
     assert _classify_failure(api) == "api"
     assert _classify_failure(other) == "error"
+    assert _classify_failure(empty) == "empty"
 
 
 def test_is_no_op():
@@ -335,7 +337,7 @@ def test_run_iteration_no_tag_when_no_commit(tmp_path, monkeypatch):
     init_project_state(target_dir, instructions="Test")
     _init_git_repo(target_dir)
 
-    def _mock_no_output(target_dir, prompt):
+    def _mock_no_output(target_dir, prompt, model=None):
         return subprocess.CompletedProcess(
             args=["opencode"], returncode=0, stdout="", stderr=""
         )
@@ -421,7 +423,7 @@ def test_run_iteration_gate_skipped_on_session_failure(tmp_path, monkeypatch):
     _init_git_repo(target_dir)
     _write_agents_with_test_cmd(target_dir, f"{sys.executable} -m pytest -q")
 
-    def _mock_timeout(target_dir, prompt):
+    def _mock_timeout(target_dir, prompt, model=None):
         return subprocess.CompletedProcess(
             args=["opencode"], returncode=-1, stdout="", stderr="Timeout watchdog"
         )
@@ -432,6 +434,90 @@ def test_run_iteration_gate_skipped_on_session_failure(tmp_path, monkeypatch):
 
     assert result.failure_type == "timeout"
     assert result.tests_passed is None
+
+
+def test_run_iteration_uses_fallback_model_when_tripped(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+    from src.core.circuit_breaker import CircuitBreaker
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    monkeypatch.setenv("DEBUILDER_CB_PAUSE_SECONDS", "0")
+    monkeypatch.setenv("DEBUILDER_MODEL_FALLBACK", "deepseek/fallback-model")
+
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("DEBUILDER_STATE_DIR", str(state_dir))
+    breaker = CircuitBreaker(state_dir=state_dir)
+    for _ in range(breaker.max_failures):
+        breaker.record_failure("api")
+
+    captured = {}
+
+    def _mock_capture(target_dir, prompt, model=None):
+        captured["model"] = model
+        return _mock_run_opencode(target_dir, prompt)
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_capture)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
+
+    run_iteration(target_dir, iteration_number=1)
+
+    assert captured["model"] == "deepseek/fallback-model"
+
+
+def test_run_iteration_resets_breaker_on_success(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+    from src.core.circuit_breaker import CircuitBreaker
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    monkeypatch.setenv("DEBUILDER_CB_PAUSE_SECONDS", "0")
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("DEBUILDER_STATE_DIR", str(state_dir))
+    breaker = CircuitBreaker(state_dir=state_dir)
+    for _ in range(breaker.max_failures):
+        breaker.record_failure("api")
+    assert breaker.to_dict()["tripped"] is True
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_run_opencode)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
+
+    run_iteration(target_dir, iteration_number=1)
+
+    assert CircuitBreaker(state_dir=state_dir).to_dict()["tripped"] is False
+
+
+def test_run_iteration_feeds_breaker_on_api_failure(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+    from src.core.circuit_breaker import CircuitBreaker
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("DEBUILDER_STATE_DIR", str(state_dir))
+
+    def _mock_api_error(target_dir, prompt, model=None):
+        return subprocess.CompletedProcess(
+            args=["opencode"],
+            returncode=1,
+            stdout="",
+            stderr="429 too many requests",
+        )
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_api_error)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
+
+    run_iteration(target_dir, iteration_number=1)
+
+    breaker = CircuitBreaker(state_dir=state_dir)
+    assert breaker.to_dict()["api_failures"] == 1
+    assert breaker.to_dict()["last_failure_type"] == "api"
 
 
 def test_rotate_log_if_large_truncates(tmp_path):
@@ -462,7 +548,7 @@ def test_run_iteration_with_suggestions_in_prompt(tmp_path, monkeypatch):
     write_state(target_dir, "SUGGESTIONS.md", "Use async everywhere.\n")
 
     captured_prompts = []
-    def mock_opencode(target_dir, prompt):
+    def mock_opencode(target_dir, prompt, model=None):
         captured_prompts.append(prompt)
         return _mock_run_opencode(target_dir, prompt)
 
