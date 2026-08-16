@@ -24,6 +24,10 @@ couverture 100 % + tests verts.
 | §6 Continuité après échec : fin du transcript injectée, typologie des échecs, backoff, trap de sortie propre, relance tmux | `src/loop/agent.py` (`_recovery_section`, `_RECOVERY_MESSAGES`, `compute_backoff`) ; `src/loop/agent_loop.sh` ; `start.sh` (`DEBUILDER_AUTO_RESTART`) | `tests/test_agent.py` (reprise après échec), `tests/test_e2e_pipeline.py` (timeout) |
 | §7 Circuit breaker API : pause croissante, état persisté, bascule de secours, alertes dashboard/webhook | `src/core/circuit_breaker.py` ; `src/loop/agent.py` (`_maybe_pause`, `_select_model`) ; `src/web/routes_dashboard.py` (champ `circuit_breaker`) | `tests/test_circuit_breaker.py`, `tests/test_web_state_routes.py`, `tests/test_e2e_pipeline.py` (erreurs API ×K) |
 | §8 Priorités d'implémentation 1→8 | `PLAN_IMPLEMENTATION_PIPELINE.md` (phases 0→9) | Ensemble de la suite (`python -m pytest`) |
+| §3.1 CDC original — paramètres avancés de l'écran de configuration (caps, web, modèle de secours, commande de test) | `src/web/routes_session.py` (`SessionStartRequest`, env de la boucle) ; `src/web/static/{index.html,app.js}` | `tests/test_web_session.py` |
+| §3.2 CDC original — badge d'état de la boucle (heartbeat + PID persisté) | `src/core/loop_status.py` ; `src/loop/agent_loop.sh` (`_heartbeat`) ; `src/web/routes_dashboard.py` ; `src/web/static/app.js` | `tests/test_loop_status.py`, `tests/test_web_state_routes.py` |
+| §3.2 CDC original — barre de progression de la mission (bilan `Couverture : X / N` de `SPEC_COVERAGE.md`) | `src/utils/markdown_parser.py` (`parse_coverage`) ; `src/loop/agent.py` (prompt Plan) ; `templates/SPEC_COVERAGE.md.tmpl` ; `src/web/static/app.js` | `tests/test_markdown_parser.py`, `tests/test_agent.py`, `tests/test_web_state_routes.py` |
+| §3.1/§3 CDC original — bannière de fin de mission + bouton « Nouvelle session » | `src/web/routes_session.py` (`/api/session/clear`) ; `src/web/static/{index.html,app.js,style.css}` | `tests/test_web_session.py` |
 
 ## Validation
 
