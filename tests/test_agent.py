@@ -9,11 +9,13 @@ from src.loop.agent import (
     _build_prompt,
     _classify_failure,
     _is_no_op,
+    _recovery_section,
     _rotate_log_if_large,
     _web_tools_env,
+    compute_backoff,
     run_iteration,
 )
-from src.core.iterations import read_entries
+from src.core.iterations import append_entry, read_entries
 from src.core.state import init_project_state, is_done, read_state, touch_done, write_state
 
 
@@ -284,6 +286,108 @@ def test_is_no_op():
     assert _is_no_op(["PROGRESS.md", "BENCHMARKS.md", "SUGGESTIONS.md.lock"]) is True
     assert _is_no_op(["src/main.py"]) is False
     assert _is_no_op(["src/main.py", "PROGRESS.md"]) is False
+
+
+def test_compute_backoff():
+    assert compute_backoff(2, failed=False) == 2.0
+    assert compute_backoff(2, failed=True) == 4.0
+    assert compute_backoff(4, failed=True) == 8.0
+    assert compute_backoff(256, failed=True, cap=300) == 300.0
+    assert compute_backoff(300, failed=True, cap=300) == 300.0
+
+
+def test_recovery_section_empty_when_no_previous_iteration(tmp_path):
+    assert _recovery_section(tmp_path) == ""
+
+
+def test_recovery_section_empty_after_success(tmp_path):
+    append_entry(tmp_path, {"iteration": 1, "exit_code": 0, "failure_type": ""})
+
+    assert _recovery_section(tmp_path) == ""
+
+
+def test_recovery_section_adapts_message_per_type(tmp_path):
+    (tmp_path / "OPENCODE_LOG.txt").write_text("ligne de travail\ninterrompue ici\n")
+
+    for failure_type in ("timeout", "api", "empty", "error", "exception"):
+        append_entry(
+            tmp_path,
+            {"iteration": 1, "exit_code": 1, "failure_type": failure_type},
+        )
+        section = _recovery_section(tmp_path)
+        assert "Reprise" not in section
+        assert "interrompue ici" in section
+
+    append_entry(tmp_path, {"iteration": 9, "exit_code": 0, "failure_type": "tests"})
+    section = _recovery_section(tmp_path)
+    assert "gate de tests" in section
+    assert "interrompue ici" not in section
+
+
+def test_recovery_section_uses_only_last_entry(tmp_path):
+    append_entry(tmp_path, {"iteration": 1, "exit_code": 1, "failure_type": "timeout"})
+    append_entry(tmp_path, {"iteration": 2, "exit_code": 0, "failure_type": ""})
+
+    assert _recovery_section(tmp_path) == ""
+
+
+def test_run_iteration_injects_recovery_after_failure(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+    (target_dir / "OPENCODE_LOG.txt").write_text(
+        "=== Iteration ===\ntravail interrompu\ncode a moitie ecrit\n"
+    )
+
+    def _mock_timeout(target_dir, prompt, model=None):
+        return subprocess.CompletedProcess(
+            args=["opencode"], returncode=-1, stdout="", stderr="Timeout watchdog"
+        )
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_timeout)
+
+    run_iteration(target_dir, iteration_number=1)
+
+    captured_prompts = []
+
+    def _mock_capture(target_dir, prompt, model=None):
+        captured_prompts.append(prompt)
+        return _mock_run_opencode(target_dir, prompt, model=model)
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_capture)
+
+    run_iteration(target_dir, iteration_number=2)
+
+    assert len(captured_prompts) == 1
+    assert "Reprise apres echec" in captured_prompts[0]
+    assert "garde-fou de temps" in captured_prompts[0]
+    assert "travail interrompu" in captured_prompts[0]
+
+
+def test_run_iteration_no_recovery_after_success(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_run_opencode)
+
+    run_iteration(target_dir, iteration_number=1)
+
+    captured_prompts = []
+
+    def _mock_capture(target_dir, prompt, model=None):
+        captured_prompts.append(prompt)
+        return _mock_run_opencode(target_dir, prompt, model=model)
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_capture)
+
+    run_iteration(target_dir, iteration_number=2)
+
+    assert "Reprise apres echec" not in captured_prompts[0]
 
 
 def _git(repo_dir: Path, *args: str) -> None:

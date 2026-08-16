@@ -25,10 +25,10 @@ from src.core.state import (
     update_progress,
 )
 from src.core.git import head_commit, stage_and_commit_all, status_files, tag_iteration
-from src.core.iterations import append_entry
+from src.core.iterations import append_entry, read_entries
 from src.core.secrets import sanitize_text
 from src.utils.test_results import resolve_test_command, run_test_gate
-from src.utils.text import strip_ansi
+from src.utils.text import read_log_tail, strip_ansi
 
 # Taille max de OPENCODE_LOG.txt avant troncature : un job sans
 # surveillance (pod distant) ne doit pas remplir le disque au fil
@@ -78,6 +78,31 @@ _WEBSEARCH_BACKEND_VARS = (
 )
 
 _FALSY = {"0", "false", "no", "off"}
+
+# Backoff entre iterations en echec (cf. agent_loop.sh) : double a
+# chaque echec consecutif, plafonne, et revient au minimum apres un
+# succes. Testable comme fonction pure.
+_BACKOFF_MIN_SECONDS = 2.0
+
+
+def compute_backoff(current: float, failed: bool, cap: float | None = None) -> float:
+    """Prochaine duree d'attente entre iterations.
+
+    Args:
+        current: Duree d'attente actuelle (secondes).
+        failed: True si l'iteration precedente a echoue.
+        cap: Plafond en secondes (defaut :
+            ``DEBUILDER_BACKOFF_CAP_SECONDS``, 300).
+
+    Returns:
+        Nouvelle duree d'attente : doublee a chaque echec (plafonnee),
+        ou revenue au minimum apres un succes.
+    """
+    if cap is None:
+        cap = float(os.environ.get("DEBUILDER_BACKOFF_CAP_SECONDS", "300"))
+    if not failed:
+        return _BACKOFF_MIN_SECONDS
+    return min(max(current * 2, _BACKOFF_MIN_SECONDS), cap)
 
 # Motifs indiquant un echec lie a l'API/au fournisseur (cle epuisee,
 # quota, provider injoignable) plutot qu'a la tache elle-meme. Base de
@@ -182,6 +207,7 @@ def run_iteration(
             benchmarks_md=benchmarks_md,
             suggestions_md=suggestions_md,
             resources_md=resources_md,
+            recovery_md=_recovery_section(target_dir),
         )
 
         _log(f"[agent] Lancement d'OpenCode...")
@@ -435,6 +461,7 @@ def _build_prompt(
     benchmarks_md: str,
     suggestions_md: str,
     resources_md: str,
+    recovery_md: str = "",
 ) -> str:
     parts = []
 
@@ -451,6 +478,16 @@ def _build_prompt(
             "## Progression Recente\n\n"
             "Voici l'etat d'avancement des dernieres iterations:\n\n"
             + progress_md
+        )
+
+    if recovery_md.strip():
+        parts.append(
+            "## Reprise apres echec\n\n"
+            "La session precedente a ete interrompue ou a echoue. "
+            "Verifie l'etat reel du repo avant de continuer : "
+            "l'agent peut croire avoir termine sa tache alors qu'il a "
+            "ete tue.\n\n"
+            + recovery_md
         )
 
     if suggestions_md.strip():
@@ -517,6 +554,79 @@ def _build_prompt(
     )
 
     return "\n\n".join(parts)
+
+
+# Message de reprise adapte au type d'echec (typologie partagee avec le
+# circuit breaker, phase 3) : la session suivante ne repart pas de zero
+# mais verifie l'etat reel laisse par la session interrompue.
+_RECOVERY_MESSAGES = {
+    "timeout": (
+        "La session precedente a ete tuee par le garde-fou de temps "
+        "(inactivite prolongee ou duree maximale atteinte) : elle n'a "
+        "probablement pas termine son travail ni tout committe."
+    ),
+    "api": (
+        "La session precedente a echoue sur une erreur API (cle "
+        "invalide, quota depasse, provider injoignable) : le travail "
+        "prevu a pu etre fait partiellement, pas du tout, ou non "
+        "committe."
+    ),
+    "empty": (
+        "La session precedente n'a produit aucune sortie : le modele "
+        "n'a rien fait. Aucun travail ne doit etre considere comme "
+        "termine."
+    ),
+    "error": "La session precedente s'est terminee en erreur.",
+    "exception": "La session precedente a plante (exception inattendue).",
+    "tests": (
+        "La gate de tests de l'iteration precedente a echoue : le "
+        "depot est dans un etat casse. Corrige le code (ou les tests) "
+        "avant de poursuivre, et ne commit jamais un etat que tu sais "
+        "casse."
+    ),
+}
+
+# Types d'echec pour lesquels la fin du transcript apporte une
+# information exploitable (le contenu du travail interrompu) : pas pour
+# une gate de tests, dont le motif est deja dans PROGRESS.md.
+_TRANSCRIPT_FAILURE_TYPES = {"timeout", "api", "empty", "error", "exception"}
+
+# Nombre de lignes du transcript injectees a la session suivante.
+_RECOVERY_LOG_LINES = 200
+
+
+def _recovery_section(target_dir: Path) -> str:
+    """Construit la section de reprise apres echec pour le prompt.
+
+    S'appuie sur la derniere entree d'``ITERATIONS.jsonl`` : si
+    l'iteration precedente a echoue, la session suivante recoit un
+    message adapte au type d'echec et, le cas echeant, la fin du
+    transcript d'OpenCode (l'agent peut croire avoir termine sa tache
+    alors qu'il a ete tue).
+
+    Args:
+        target_dir: Repertoire du projet cible.
+
+    Returns:
+        Contenu Markdown de la section, ou chaine vide si l'iteration
+        precedente a reussi (ou n'existe pas).
+    """
+    entries = read_entries(target_dir, limit=1)
+    if not entries:
+        return ""
+    failure = entries[-1].get("failure_type", "")
+    if not failure:
+        return ""
+
+    message = _RECOVERY_MESSAGES.get(failure, _RECOVERY_MESSAGES["error"])
+    if failure in _TRANSCRIPT_FAILURE_TYPES:
+        tail = read_log_tail(target_dir, "OPENCODE_LOG.txt", _RECOVERY_LOG_LINES)
+        if tail.strip():
+            message += (
+                "\n\n### Fin du transcript de la session interrompue\n\n"
+                "```\n" + sanitize_text(tail) + "\n```\n"
+            )
+    return message
 
 
 def _run_opencode(
