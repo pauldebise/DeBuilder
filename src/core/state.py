@@ -24,6 +24,8 @@ STATE_FILES = [
     "PLAN.md",
     "ARCHITECTURE.md",
     "SPEC_COVERAGE.md",
+    "FINISHED_REPORT.md",
+    "REVIEW.md",
     "DONE",
 ]
 
@@ -63,6 +65,7 @@ def init_project_state(
     _write_file(target_dir / "PLAN.md", _render_template("PLAN.md.tmpl"))
     _write_file(target_dir / "ARCHITECTURE.md", _render_template("ARCHITECTURE.md.tmpl"))
     _write_file(target_dir / "SPEC_COVERAGE.md", _render_template("SPEC_COVERAGE.md.tmpl"))
+    _write_file(target_dir / "FINISHED_REPORT.md", _render_template("FINISHED_REPORT.md.tmpl"))
 
     if fresh_repo:
         install_test_hook(target_dir)

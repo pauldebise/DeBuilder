@@ -80,6 +80,31 @@ def all_boxes_checked(task: ParsedTask) -> bool:
     return bool(boxes) and all(item.checked for item in boxes)
 
 
+def parse_checkboxes(markdown: str) -> list[CheckItem]:
+    """Toutes les cases a cocher d'un document Markdown.
+
+    Utilise pour FINISHED_REPORT.md (checklist du cahier des charges),
+    dont les titres de section ne sont pas ceux de TASK.md.
+
+    Args:
+        markdown: Contenu Markdown.
+
+    Returns:
+        Les cases rencontrees, dans l'ordre du document.
+    """
+    items: list[CheckItem] = []
+    for line in markdown.splitlines():
+        match = _CHECKBOX_RE.match(line)
+        if match:
+            items.append(
+                CheckItem(
+                    text=match.group(2).strip(),
+                    checked=match.group(1).lower() == "x",
+                )
+            )
+    return items
+
+
 def extract_test_command(markdown: str) -> str:
     """Extrait la commande de la section « Commande de test ».
 
@@ -136,14 +161,4 @@ def _strip_trailing_heading(body: str) -> str:
 
 
 def _parse_checkboxes(body: str) -> list[CheckItem]:
-    items: list[CheckItem] = []
-    for line in body.splitlines():
-        match = _CHECKBOX_RE.match(line)
-        if match:
-            items.append(
-                CheckItem(
-                    text=match.group(2).strip(),
-                    checked=match.group(1).lower() == "x",
-                )
-            )
-    return items
+    return parse_checkboxes(body)

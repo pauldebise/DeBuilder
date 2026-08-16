@@ -4,6 +4,7 @@ from src.utils.task_parser import (
     CheckItem,
     all_boxes_checked,
     extract_test_command,
+    parse_checkboxes,
     parse_task,
 )
 
@@ -99,3 +100,21 @@ def test_extract_test_command_missing_section():
 def test_extract_test_command_case_insensitive():
     md = "## commande de test\n\nmake test\n"
     assert extract_test_command(md) == "make test"
+
+
+def test_parse_checkboxes_scans_whole_document():
+    md = (
+        "# Rapport\n\n"
+        "## Checklist du Cahier des Charges\n\n"
+        "- [x] item 1\n"
+        "- [ ] item 2\n\n"
+        "## Autre section\n\n- [x] autre\n"
+    )
+
+    boxes = parse_checkboxes(md)
+
+    assert boxes == [
+        CheckItem(text="item 1", checked=True),
+        CheckItem(text="item 2", checked=False),
+        CheckItem(text="autre", checked=True),
+    ]
