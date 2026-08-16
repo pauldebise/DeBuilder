@@ -9,6 +9,7 @@ il reconstruit son contexte depuis les fichiers d'etat.
 
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -23,10 +24,12 @@ from src.core.state import (
     is_done,
     read_state,
     update_progress,
+    write_state,
 )
 from src.core.git import head_commit, stage_and_commit_all, status_files, tag_iteration
 from src.core.iterations import append_entry, read_entries
 from src.core.secrets import sanitize_text
+from src.utils.task_parser import all_boxes_checked, parse_task
 from src.utils.test_results import resolve_test_command, run_test_gate
 from src.utils.text import read_log_tail, strip_ansi
 
@@ -40,7 +43,7 @@ _MAX_LOG_BYTES = 5 * 1024 * 1024
 # interactive qu'il ne recevra jamais) ne doit jamais figer la boucle
 # indefiniment. Base sur l'inactivite (et non la duree totale) pour
 # ne pas tuer une iteration qui avance encore dans sa liste de taches.
-# L'agent est instruit (cf. _build_prompt) de lancer les commandes
+# L'agent est instruit (cf. _build_implement_prompt) de lancer les commandes
 # longues (entrainement ML...) en arriere-plan plutot que de bloquer
 # ici, mais ces valeurs restent surchargeables au cas ou.
 _OPENCODE_INACTIVITY_TIMEOUT_SECONDS = int(
@@ -55,9 +58,9 @@ _OPENCODE_MAX_SECONDS = int(
 )
 
 # Longueur max du fallback ecrit dans PROGRESS.md quand l'agent ne l'a
-# pas mis a jour lui-meme (cf. _update_state_files) : la sortie brute
-# complete est deja dans OPENCODE_LOG.txt, l'injecter en entier ferait
-# regonfler indefiniment le prompt des iterations suivantes.
+# pas mis a jour lui-meme (cf. _run_implement_post_steps) : la sortie
+# brute complete est deja dans OPENCODE_LOG.txt, l'injecter en entier
+# ferait regonfler indefiniment le prompt des iterations suivantes.
 _MAX_FALLBACK_PROGRESS_CHARS = 4000
 
 # OpenCode n'expose l'outil `websearch` que si le fournisseur du modele
@@ -134,6 +137,11 @@ _STATE_FILES = {
     "BENCHMARKS.md",
     "SUGGESTIONS.md",
     "RESOURCES_NEEDED.md",
+    "TASK.md",
+    "PLAN.md",
+    "ARCHITECTURE.md",
+    "SPEC_COVERAGE.md",
+    "GATE_FAILURE.md",
     "DONE",
 }
 
@@ -155,6 +163,7 @@ class IterationResult:
     tests_passed: bool | None = None
     tests_summary: dict | None = None
     tags: list[str] | None = None
+    gate_failures: list[str] | None = None
     continue_loop: bool = True
 
     def __bool__(self) -> bool:
@@ -164,6 +173,8 @@ class IterationResult:
     def __post_init__(self) -> None:
         if self.tags is None:
             self.tags = []
+        if self.gate_failures is None:
+            self.gate_failures = []
 
 
 def run_iteration(
@@ -171,6 +182,20 @@ def run_iteration(
     iteration_number: int | None = None,
 ) -> IterationResult:
     """Execute une iteration complete de l'agent.
+
+    Une iteration = 2 sessions OpenCode specialisees (cahier des
+    charges §2) :
+    1. Session Plan, strictement lecture seule : analyse l'etat du
+       projet et produit le contrat de tache (```TASK) ainsi que le
+       plan mis a jour (```PLAN). La boucle materialise elle-meme
+       TASK.md et PLAN.md a partir de ces blocs.
+    2. Session Implement : consomme TASK.md, implemente, teste,
+       committe par sous-tache, coche les cases, met a jour
+       PROGRESS.md.
+
+    Les gates (cases cochees, tests verts, PROGRESS.md mis a jour)
+    sont ensuite verifiees par la boucle, qui ne croit pas l'agent sur
+    parole.
 
     Args:
         target_dir: Repertoire du projet cible.
@@ -194,65 +219,103 @@ def run_iteration(
     _maybe_pause(breaker, target_dir)
     model = _select_model(breaker)
 
+    progress_before = read_state(target_dir, "PROGRESS.md")
+    suggestions_md = read_state(target_dir, "SUGGESTIONS.md")
+    session_failures: list[str] = []
+
+    # --- Session Plan (lecture seule) -----------------------------------
     try:
-        agents_md = read_state(target_dir, "AGENTS.md")
-        progress_md = read_state(target_dir, "PROGRESS.md")
-        benchmarks_md = read_state(target_dir, "BENCHMARKS.md")
-        suggestions_md = read_state(target_dir, "SUGGESTIONS.md")
-        resources_md = read_state(target_dir, "RESOURCES_NEEDED.md")
-
-        prompt = _build_prompt(
-            agents_md=agents_md,
-            progress_md=progress_md,
-            benchmarks_md=benchmarks_md,
-            suggestions_md=suggestions_md,
-            resources_md=resources_md,
-            recovery_md=_recovery_section(target_dir),
+        plan_prompt = _build_plan_prompt(
+            agents_md=read_state(target_dir, "AGENTS.md"),
+            progress_md=progress_before,
+            plan_md=read_state(target_dir, "PLAN.md"),
+            spec_md=read_state(target_dir, "SPEC_COVERAGE.md"),
+            gate_state=_gate_state_summary(target_dir),
         )
+        _log("[agent] Session Plan (lecture seule)...")
+        plan_completed = _run_opencode(
+            target_dir, plan_prompt, model=model, read_only=True
+        )
+        _log(f"[agent] Session Plan terminee (code={plan_completed.returncode})")
 
-        _log(f"[agent] Lancement d'OpenCode...")
-        completed = _run_opencode(target_dir, prompt, model=model)
-        _log(f"[agent] OpenCode termine (code={completed.returncode})")
-
-        result.exit_code = completed.returncode
-        result.failure_type = _classify_failure(completed)
-
-        if completed.returncode != 0 and completed.stderr:
-            _log(f"[agent] Erreur OpenCode: {completed.stderr[:500]}")
-
-        # Alimente le circuit breaker avec le resultat de la session
-        # OpenCode uniquement (pas la gate de tests : un code qui ne
-        # passe pas les tests n'est pas une panne d'API).
-        if result.failure_type == "":
-            breaker.record_success()
-        else:
-            breaker.record_failure(result.failure_type)
-
-        barrier_files = sorted(target_dir.glob("BARRIER_*"))
-        if barrier_files:
-            _log(f"[agent] {len(barrier_files)} barriere(s) detectee(s), mise en pause...")
-            _handle_barriers(target_dir, barrier_files)
-
-        _update_state_files(target_dir, completed, suggestions_md, progress_md)
+        plan_failure = _classify_failure(plan_completed)
+        session_failures.append(plan_failure)
+        if plan_failure:
+            result.exit_code = plan_completed.returncode
+            result.failure_type = plan_failure
+            _record_session_failure(target_dir, plan_failure, plan_completed)
+        elif not _materialize_plan_outputs(target_dir, plan_completed.stdout):
+            # La session a repondu, mais sans contrat de tache valide :
+            # la boucle ne lance jamais Implement sans TASK.md.
+            result.failure_type = "plan"
+            _log("[agent] Session Plan : pas de contrat de tache valide (bloc TASK manquant ou vide).")
+            update_progress(
+                target_dir,
+                f"- **Action realisee** : Session Plan\n"
+                f"- **Resultat** : ECHEC (plan)\n"
+                f"- **Problemes rencontres** : Bloc ```TASK manquant ou vide dans la reponse.\n"
+                f"- **Solutions envisagees** : Reformuler la reponse avec les blocs TASK et PLAN.\n",
+            )
     except Exception as exc:
         # Une iteration ne doit jamais tuer la boucle autonome : sur
         # un pod sans surveillance, un crash non rattrape ici arrete
         # l'agent de facon definitive jusqu'a intervention manuelle.
-        _log(f"[agent] ERREUR inattendue pendant l'iteration : {exc}")
+        _log(f"[agent] ERREUR inattendue pendant la session Plan : {exc}")
         _record_iteration_exception(target_dir, exc)
         result.exit_code = 1
         result.failure_type = "exception"
-        breaker.record_failure("error")
+        session_failures.append("error")
 
-    # Gate de tests deterministe : uniquement si la session s'est
-    # terminee proprement (une session morte laisse le repo dans un
-    # etat imprevisible, y lancer les tests serait un faux signal).
+    # --- Session Implement (seulement si la session Plan a reussi) -----
     if result.failure_type == "":
-        _run_test_gate(target_dir, result)
+        try:
+            implement_prompt = _build_implement_prompt(
+                task_md=read_state(target_dir, "TASK.md"),
+                progress_md=progress_before,
+                benchmarks_md=read_state(target_dir, "BENCHMARKS.md"),
+                arch_md=read_state(target_dir, "ARCHITECTURE.md"),
+                suggestions_md=suggestions_md,
+                resources_md=read_state(target_dir, "RESOURCES_NEEDED.md"),
+                recovery_md=_recovery_section(target_dir),
+            )
+            _log("[agent] Session Implement...")
+            completed = _run_opencode(target_dir, implement_prompt, model=model)
+            _log(f"[agent] Session Implement terminee (code={completed.returncode})")
 
-    # Capture AVANT le commit de fin d'iteration : le diff de
-    # l'iteration (base de la detection de no-op, phase 6) doit
-    # refleter le travail de la session, pas le commit lui-meme.
+            result.exit_code = completed.returncode
+            result.failure_type = _classify_failure(completed)
+            session_failures.append(result.failure_type)
+
+            if completed.returncode != 0 and completed.stderr:
+                _log(f"[agent] Erreur OpenCode: {completed.stderr[:500]}")
+
+            if result.failure_type:
+                _record_session_failure(
+                    target_dir, result.failure_type, completed
+                )
+            else:
+                _run_implement_post_steps(
+                    target_dir,
+                    result,
+                    completed,
+                    suggestions_md,
+                    progress_before,
+                )
+        except Exception as exc:
+            _log(f"[agent] ERREUR inattendue pendant la session Implement : {exc}")
+            _record_iteration_exception(target_dir, exc)
+            result.exit_code = 1
+            result.failure_type = "exception"
+            session_failures.append("error")
+
+    # --- Circuit breaker : une seule alimentation par iteration --------
+    iteration_failure = next((f for f in session_failures if f), "")
+    if iteration_failure:
+        breaker.record_failure(iteration_failure)
+    else:
+        breaker.record_success()
+
+    # --- Finalisation commune -------------------------------------------
     changed = status_files(target_dir)
     result.changed_files = len(changed)
     result.no_op = _is_no_op(changed)
@@ -281,6 +344,239 @@ def run_iteration(
 
     _journal_iteration(target_dir, iteration_number, result)
     return result
+
+
+_FENCED_BLOCK_RE = re.compile(r"`{3,}(TASK|PLAN)\s*\n(.*?)\n`{3,}", re.DOTALL)
+
+
+def _extract_fenced_block(stdout: str, tag: str) -> str:
+    """Extrait le bloc de code `` ```TASK `` ou `` ```PLAN `` de la sortie.
+
+    Accepte 3 backticks ou plus (4 backticks autorisent un bloc de code
+    imbrique dans le contrat de tache).
+
+    Args:
+        stdout: Sortie complete de la session Plan.
+        tag: Marqueur du bloc (``TASK`` ou ``PLAN``).
+
+    Returns:
+        Contenu du bloc, ou chaine vide si absent.
+    """
+    for match in _FENCED_BLOCK_RE.finditer(stdout):
+        if match.group(1).upper() == tag:
+            return match.group(2).strip()
+    return ""
+
+
+def _materialize_plan_outputs(target_dir: Path, stdout: str) -> bool:
+    """Materialise TASK.md et PLAN.md a partir de la sortie de la session Plan.
+
+    La boucle ne croit pas l'agent sur parole : elle ecrit elle-meme le
+    contrat de tache et le plan, a partir des blocs delimites de la
+    reponse.
+
+    Args:
+        target_dir: Repertoire du projet cible.
+        stdout: Sortie de la session Plan.
+
+    Returns:
+        True si un bloc TASK non vide a ete materialise (condition
+        necessaire pour lancer la session Implement).
+    """
+    task_content = _extract_fenced_block(stdout, "TASK")
+    if not task_content:
+        return False
+    write_state(target_dir, "TASK.md", task_content + "\n")
+
+    plan_content = _extract_fenced_block(stdout, "PLAN")
+    if plan_content:
+        write_state(target_dir, "PLAN.md", plan_content + "\n")
+    return True
+
+
+def _run_implement_post_steps(
+    target_dir: Path,
+    result: IterationResult,
+    completed: subprocess.CompletedProcess,
+    suggestions_md: str,
+    progress_before: str,
+) -> None:
+    """Etapes apres une session Implement terminee proprement.
+
+    Ordre important : les gates (cases cochees, PROGRESS.md modifie)
+    sont verifiees AVANT le fallback de PROGRESS.md, sinon le fallback
+    masquerait l'oubli de l'agent.
+
+    Args:
+        target_dir: Repertoire du projet cible.
+        result: Resultat d'iteration en cours de remplissage.
+        completed: Processus OpenCode termine (rc 0).
+        suggestions_md: Contenu de SUGGESTIONS.md avant l'iteration.
+        progress_before: Contenu de PROGRESS.md avant l'iteration.
+    """
+    barrier_files = sorted(target_dir.glob("BARRIER_*"))
+    if barrier_files:
+        _log(f"[agent] {len(barrier_files)} barriere(s) detectee(s), mise en pause...")
+        _handle_barriers(target_dir, barrier_files)
+
+    # Gates deterministes executees par la boucle (pas par l'agent).
+    gate_failures = _check_task_gates(
+        target_dir, progress_before=progress_before
+    )
+    if gate_failures:
+        result.gate_failures = gate_failures
+        result.failure_type = "gate"
+        _write_gate_failure(target_dir, gate_failures)
+        _log(
+            "[agent] Gates en echec : "
+            + "; ".join(gate_failures)
+            + " — la tache n'est pas soldee."
+        )
+    else:
+        _clear_gate_failure(target_dir)
+
+    # Fallback : si l'agent n'a pas mis a jour PROGRESS.md lui-meme
+    # (etape obligatoire de la session Implement), un extrait tronque
+    # de sa sortie est consigne en garde-fou (phase 7 le remplacera
+    # par un resume LLM).
+    if completed.stdout.strip():
+        progress_after = read_state(target_dir, "PROGRESS.md")
+        if progress_after == progress_before:
+            update_progress(
+                target_dir, completed.stdout.strip()[-_MAX_FALLBACK_PROGRESS_CHARS:]
+            )
+
+    # Gate de tests deterministe (TASK.md > AGENTS.md > env).
+    if result.failure_type == "":
+        _run_test_gate(target_dir, result)
+        if result.failure_type == "tests":
+            _write_gate_failure(
+                target_dir,
+                ["commande de test en echec (detail dans PROGRESS.md)"],
+            )
+
+    # Purge de SUGGESTIONS.md (cdc §4.4) : uniquement si l'iteration a
+    # reussi ET que l'agent a justifie sa decision (acceptee/rejetee/
+    # reportee) dans PROGRESS.md. Jamais apres un echec.
+    _maybe_clear_suggestions(
+        target_dir,
+        suggestions_md,
+        read_state(target_dir, "PROGRESS.md"),
+        success=(result.failure_type == ""),
+    )
+
+
+def _check_task_gates(target_dir: Path, progress_before: str) -> list[str]:
+    """Verifie les gates du contrat de tache (boucle, pas l'agent).
+
+    Args:
+        target_dir: Repertoire du projet cible.
+        progress_before: Contenu de PROGRESS.md avant la session
+            Implement.
+
+    Returns:
+        Liste des motifs d'echec (vide si toutes les gates passent).
+    """
+    failures: list[str] = []
+    task = parse_task(read_state(target_dir, "TASK.md"))
+    if not all_boxes_checked(task):
+        failures.append("toutes les cases de TASK.md ne sont pas cochees")
+    if read_state(target_dir, "PROGRESS.md") == progress_before:
+        failures.append("PROGRESS.md n'a pas ete mis a jour")
+    return failures
+
+
+def _write_gate_failure(target_dir: Path, failures: list[str]) -> None:
+    """Consigne les motifs d'echec des gates (injectes a la session suivante)."""
+    content = "# Echec des Gates\n\n" + "".join(f"- {f}\n" for f in failures)
+    write_state(target_dir, "GATE_FAILURE.md", content)
+
+
+def _clear_gate_failure(target_dir: Path) -> None:
+    try:
+        (target_dir / "GATE_FAILURE.md").unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _maybe_clear_suggestions(
+    target_dir: Path,
+    suggestions_md: str,
+    progress_md: str,
+    success: bool,
+) -> None:
+    """Vide SUGGESTIONS.md uniquement si l'iteration a reussi et que la
+    decision a ete justifiee dans PROGRESS.md (cdc §4.4)."""
+    if not suggestions_md.strip():
+        return
+    if not success:
+        _log("[agent] Suggestions conservees : iteration en echec.")
+        return
+    lowered = progress_md.lower()
+    if any(word in lowered for word in ("acceptee", "rejetee", "reportee")):
+        clear_suggestions(target_dir)
+    else:
+        _log(
+            "[agent] Suggestions conservees : aucune justification "
+            "(acceptee/rejetee/reportee) dans PROGRESS.md."
+        )
+
+
+def _gate_state_summary(target_dir: Path) -> str:
+    """Etat des gates de l'iteration precedente, pour la session Plan.
+
+    Anti « plan drift » : le planner verifie que l'iteration precedente
+    est reellement terminee avant de rediger un nouveau plan.
+
+    Args:
+        target_dir: Repertoire du projet cible.
+
+    Returns:
+        Resume factuel (gates, tests, arbre git) en Markdown.
+    """
+    parts: list[str] = []
+    gate_failure = read_state(target_dir, "GATE_FAILURE.md").strip()
+    if gate_failure:
+        parts.append("Echec des gates de l'iteration precedente :\n\n" + gate_failure)
+    else:
+        parts.append("Gates de l'iteration precedente : OK.")
+
+    entries = read_entries(target_dir, limit=1)
+    if entries:
+        tests_passed = entries[-1].get("tests_passed")
+        label = {True: "vert", False: "rouge", None: "non evalues"}.get(
+            tests_passed, "inconnu"
+        )
+        parts.append(f"Tests de la derniere iteration : {label}.")
+
+    dirty = status_files(target_dir)
+    if dirty:
+        parts.append(
+            f"Arbre git SALE ({len(dirty)} fichier(s) non committe(s)) : "
+            "verifier que l'iteration precedente est reellement terminee "
+            "avant de planifier."
+        )
+    else:
+        parts.append("Arbre git propre.")
+    return "\n".join(parts)
+
+
+def _record_session_failure(
+    target_dir: Path,
+    failure_type: str,
+    completed: subprocess.CompletedProcess,
+) -> None:
+    """Consigne un echec de session OpenCode dans PROGRESS.md."""
+    stderr = completed.stderr.strip() if completed.stderr else ""
+    stdout = completed.stdout.strip() if completed.stdout else ""
+    detail = (stderr or stdout)[-500:]
+    update_progress(
+        target_dir,
+        f"- **Action realisee** : Tentative d'iteration (session OpenCode)\n"
+        f"- **Resultat** : ECHEC ({failure_type}, code {completed.returncode})\n"
+        f"- **Problemes rencontres** : {sanitize_text(detail)}\n"
+        f"- **Solutions envisagees** : Verifier la cle API et la configuration d'OpenCode.\n",
+    )
 
 
 def _env_iteration_number() -> int:
@@ -436,6 +732,8 @@ def _journal_iteration(
     if result.tests_passed is not None:
         entry["tests_passed"] = result.tests_passed
         entry["tests"] = result.tests_summary
+    if result.gate_failures:
+        entry["gate_failures"] = result.gate_failures
     try:
         append_entry(target_dir, entry)
     except Exception as exc:
@@ -455,29 +753,116 @@ def _record_iteration_exception(target_dir: Path, exc: Exception) -> None:
         pass
 
 
-def _build_prompt(
+def _build_plan_prompt(
     agents_md: str,
     progress_md: str,
+    plan_md: str,
+    spec_md: str,
+    gate_state: str,
+) -> str:
+    """Construit le prompt de la session Plan (lecture seule).
+
+    Le planner n'ecrit rien lui-meme : sa reponse doit se terminer par
+    deux blocs de code delimites, ```TASK (le contrat de tache) et
+    ```PLAN (le plan mis a jour). La boucle materialise ces deux
+    fichiers elle-meme.
+    """
+    parts = []
+
+    if agents_md:
+        parts.append("## Objectifs du Projet (cahier des charges)\n\n" + agents_md)
+
+    if spec_md.strip():
+        parts.append(
+            "## Couverture du Cahier des Charges\n\n"
+            "Maintenir ce mapping a jour : chaque item realise et teste "
+            "doit y figurer.\n\n" + spec_md
+        )
+
+    if plan_md.strip():
+        parts.append("## Plan de Developpement (backlog)\n\n" + plan_md)
+
+    if progress_md.strip():
+        parts.append(
+            "## Progression Recente\n\n" + progress_md
+        )
+
+    parts.append(
+        "## Etat des Gates de l'Iteration Precedente\n\n"
+        + (gate_state or "Aucune information.")
+    )
+
+    parts.append(
+        "## Instructions\n\n"
+        "1. Analyse l'etat actuel du projet : progression recente, plan, "
+        "couverture du cahier des charges, etat des gates de l'iteration "
+        "precedente.\n"
+        "2. Verifie la coherence AVANT de planifier (anti plan-drift) : "
+        "si l'iteration precedente n'est pas reellement terminee (gates "
+        "en echec, arbre git sale, tests rouges), la tache a planifier "
+        "est d'abord de la terminer ou de reparer l'etat, pas d'enchainer "
+        "sur la suite.\n"
+        "3. Choisis la prochaine tache (une seule) la plus pertinente du "
+        "backlog, ou reprend la tache interrompue. Ne planifie qu'une "
+        "quantite de travail realisable en une iteration.\n"
+        "4. Redige le contrat de tache TASK.md : objectif en une ou deux "
+        "phrases, criteres d'acceptation mesurables en cases a cocher, "
+        "la commande de test exacte (UNE SEULE LIGNE, sans bloc de code), "
+        "et les sous-taches atomiques en cases a cocher.\n"
+        "5. Mets a jour le plan : deplace la tache choisie, trie le "
+        "backlog par priorite, complete la couverture du cahier des "
+        "charges dans le bloc PLAN si des items ont ete realises.\n"
+        "6. Termine ta reponse par EXACTEMENT deux blocs de code, dans "
+        "cet ordre :\n"
+        "   - un bloc marque TASK contenant le contenu complet de TASK.md ;\n"
+        "   - un bloc marque PLAN contenant le contenu complet et a jour "
+        "de PLAN.md (avec la table SPEC_COVERAGE incluse dans ce bloc).\n"
+        "   Exemple : ```TASK puis le contenu, puis ```, puis ```PLAN puis "
+        "le contenu, puis ```. Ne rien mettre apres le bloc PLAN."
+    )
+
+    return "\n\n".join(parts)
+
+
+def _build_implement_prompt(
+    task_md: str,
+    progress_md: str,
     benchmarks_md: str,
+    arch_md: str,
     suggestions_md: str,
     resources_md: str,
     recovery_md: str = "",
 ) -> str:
+    """Construit le prompt de la session Implement.
+
+    La session Implement ne relit pas le cahier des charges : celui-ci a
+    deja ete traduit en contrat de tache par la session Plan.
+    """
     parts = []
 
-    if agents_md:
-        parts.append("## Objectifs et Contexte\n\n" + agents_md)
+    parts.append(
+        "## Contrat de Tache (TASK.md)\n\n"
+        "Voici la tache a realiser pour cette iteration. Ne relis pas le "
+        "cahier des charges : il a deja ete traduit en tache.\n\n"
+        + (task_md or "(TASK.md manquant)")
+    )
+
+    if progress_md.strip():
+        parts.append(
+            "## Progression Recente\n\n" + progress_md
+        )
 
     if benchmarks_md.strip():
         parts.append(
             "## Benchmarks (ne pas regresser)\n\n" + benchmarks_md
         )
 
-    if progress_md.strip():
+    if arch_md.strip():
         parts.append(
-            "## Progression Recente\n\n"
-            "Voici l'etat d'avancement des dernieres iterations:\n\n"
-            + progress_md
+            "## Decisions d'Architecture (persistantes)\n\n"
+            "Respecte ces decisions structurantes, et ajoute-y toute "
+            "nouvelle decision prise pendant cette iteration, en restant "
+            "concis.\n\n" + arch_md
         )
 
     if recovery_md.strip():
@@ -508,35 +893,39 @@ def _build_prompt(
 
     parts.append(
         "## Instructions\n\n"
-        "1. Analyse l'etat actuel du projet et la progression recente.\n"
-        "2. Determine la prochaine action a realiser.\n"
-        "3. Execute cette action dans le repertoire de travail.\n"
-        "4. Mets a jour PROGRESS.md avec :\n"
-        "   - Action realisee\n"
-        "   - Resultat obtenu\n"
-        "   - Problemes rencontres et solutions\n"
-        "   - Prochaine sous-tache prevue\n"
-        "   Si tu prends une decision d'architecture structurante (stack, "
-        "schema de donnees, convention...), note-la aussi dans la section "
-        "'Decisions d'Architecture' de PROGRESS.md (jamais tronquee par la "
-        "fenetre glissante), en restant concis.\n"
-        "5. Si une suggestion utilisateur est presente, "
-        "justifie ta decision (acceptee/rejetee/reportee) dans PROGRESS.md.\n"
-        "6. Mets a jour BENCHMARKS.md si de nouvelles metriques "
-        "ont ete collectees (temps, scores, utilisation hardware).\n"
+        "1. Lis le contrat de tache ci-dessus et execute les sous-taches "
+        "dans l'ordre.\n"
+        "2. Pour CHAQUE sous-tache terminee : coche sa case dans TASK.md "
+        "(remplace [ ] par [x]) et justifie dans PROGRESS.md ce qui a "
+        "ete fait. Ne coche JAMAIS une case sans l'avoir reellement "
+        "terminee et testee.\n"
+        "3. Commits : un petit commit par sous-tache, au format "
+        "Conventional Commits `type(portee): description` avec un type "
+        "valide (feat, fix, chore, docs, test, refactor, perf, ci, "
+        "build, style). Ne jamais commiter un etat que tu sais casse.\n"
+        "4. Lance la commande de test du contrat avant de considerer une "
+        "sous-tache comme terminee ; ajoute des tests pour tout nouveau "
+        "code.\n"
+        "5. DERNIERE ETAPE OBLIGATOIRE : mets a jour PROGRESS.md avec "
+        "Action realisee, Resultat obtenu, Problemes rencontres et "
+        "solutions, et la prochaine sous-tache prevue. Mets a jour "
+        "BENCHMARKS.md si de nouvelles metriques ont ete collectees, et "
+        "ARCHITECTURE.md si une decision structurante a ete prise.\n"
+        "6. Si une suggestion utilisateur est presente, justifie ta "
+        "decision (acceptee/rejetee/reportee) dans PROGRESS.md.\n"
         "7. Ne JAMAIS inclure de cles API ou secrets dans les logs/commits.\n"
-        "8. Si une ressource te manque, trouve une solution de contournement "
-        "et ne bloque jamais. Si tu signales le besoin dans "
-        "RESOURCES_NEEDED.md, justifie-y explicitement pourquoi cette "
-        "ressource serait un plus et quelle solution palliative tu as deja "
-        "mise en place en attendant.\n"
-        "9. Pour toute commande longue (entrainement ML, build volumineux, "
-        "telechargement de dataset...) : lance-la en arriere-plan "
-        "(ex: `nohup ... > train.log 2>&1 &`) et redonne la main immediatement. "
-        "Ne bloque JAMAIS cet appel en attendant sa fin : cette iteration a "
-        "un delai maximum, et le processus serait tue avant la fin de "
-        "l'entrainement. Verifie et rapporte sa progression (via son fichier "
-        "de log ou TensorBoard) aux iterations suivantes.\n"
+        "8. Si une ressource te manque, trouve une solution de "
+        "contournement et ne bloque jamais. Si tu signales le besoin "
+        "dans RESOURCES_NEEDED.md, justifie-y explicitement pourquoi "
+        "cette ressource serait un plus et quelle solution palliative tu "
+        "as deja mise en place en attendant.\n"
+        "9. Pour toute commande longue (entrainement ML, build "
+        "volumineux, telechargement de dataset...) : lance-la en "
+        "arriere-plan (ex: `nohup ... > train.log 2>&1 &`) et redonne "
+        "la main immediatement. Ne bloque JAMAIS cet appel en attendant "
+        "sa fin : cette iteration a un delai maximum, et le processus "
+        "serait tue avant la fin de l'entrainement. Verifie et rapporte "
+        "sa progression aux iterations suivantes.\n"
         "10. Tu as un acces internet via les outils `websearch` "
         "(rechercher) et `webfetch` (lire une URL). Utilise-les des que "
         "ta decision depend d'une information externe susceptible "
@@ -578,6 +967,16 @@ _RECOVERY_MESSAGES = {
     ),
     "error": "La session precedente s'est terminee en erreur.",
     "exception": "La session precedente a plante (exception inattendue).",
+    "plan": (
+        "La session Plan precedente n'a pas produit de contrat de tache "
+        "valide (bloc TASK manquant ou vide). Aucun travail n'a ete "
+        "lance : reprend la planification."
+    ),
+    "gate": (
+        "Les gates de l'iteration precedente ont echoue (voir "
+        "GATE_FAILURE.md) : la tache n'est pas soldee. Termine ou "
+        "repare l'etat avant de considerer que le travail est fait."
+    ),
     "tests": (
         "La gate de tests de l'iteration precedente a echoue : le "
         "depot est dans un etat casse. Corrige le code (ou les tests) "
@@ -633,6 +1032,7 @@ def _run_opencode(
     target_dir: Path,
     prompt: str,
     model: str | None = None,
+    read_only: bool = False,
 ) -> subprocess.CompletedProcess:
     import shutil
 
@@ -685,9 +1085,10 @@ def _run_opencode(
     # sans cette correction, il travaillerait dans le repertoire
     # de DeBuilder (celui de la boucle) au lieu du projet cible.
     env = {**os.environ, "PWD": str(target_dir)}
-    env.update(_web_tools_env(env))
+    env.update(_web_tools_env(env, read_only=read_only))
 
-    _log(f"[agent] opencode run --model {model or '(default)'} [...]")
+    label = " (lecture seule)" if read_only else ""
+    _log(f"[agent] opencode run --model {model or '(default)'}{label} [...]")
 
     log_file = target_dir / "OPENCODE_LOG.txt"
     _rotate_log_if_large(log_file)
@@ -701,8 +1102,11 @@ def _run_opencode(
             pass
 
 
-def _web_tools_env(base_env: dict[str, str]) -> dict[str, str]:
-    """Calcule les variables d'env activant la recherche en ligne.
+def _web_tools_env(
+    base_env: dict[str, str],
+    read_only: bool = False,
+) -> dict[str, str]:
+    """Calcule les variables d'env de la session OpenCode.
 
     L'agent tourne sans supervision : pour ne pas rester sur des
     connaissances figees (API obsoletes, versions de paquets,
@@ -713,30 +1117,37 @@ def _web_tools_env(base_env: dict[str, str]) -> dict[str, str]:
         base_env: Environnement de depart (typiquement ``os.environ``
             enrichi), utilise pour respecter un reglage deja pose par
             l'utilisateur.
+        read_only: True pour la session Plan : refus FORCE des outils
+            d'ecriture (edit/write/bash) via la config inline, meme si
+            l'utilisateur les avait autorises ailleurs.
 
     Returns:
         Les variables a surcharger dans l'env du sous-processus
-        OpenCode (dictionnaire vide si l'utilisateur a desactive la
-        fonctionnalite via ``DEBUILDER_WEB_TOOLS=0``).
+        OpenCode (dictionnaire vide si l'utilisateur a desactive les
+        outils web et que la session n'est pas en lecture seule).
     """
-    if base_env.get("DEBUILDER_WEB_TOOLS", "1").strip().lower() in _FALSY:
+    web_enabled = base_env.get("DEBUILDER_WEB_TOOLS", "1").strip().lower() not in _FALSY
+    if not web_enabled and not read_only:
         return {}
 
     overrides: dict[str, str] = {}
 
-    # Un backend explicitement choisi par l'utilisateur (Exa, Parallel,
-    # cle API dediee...) prime : ne rien imposer dans ce cas.
-    if not any(base_env.get(var, "").strip() for var in _WEBSEARCH_BACKEND_VARS):
-        overrides["OPENCODE_ENABLE_EXA"] = "1"
+    if web_enabled:
+        # Un backend explicitement choisi par l'utilisateur (Exa,
+        # Parallel, cle API dediee...) prime : ne rien imposer ici.
+        if not any(base_env.get(var, "").strip() for var in _WEBSEARCH_BACKEND_VARS):
+            overrides["OPENCODE_ENABLE_EXA"] = "1"
 
-    config_content = _merge_config_content(base_env.get("OPENCODE_CONFIG_CONTENT", ""))
+    config_content = _merge_config_content(
+        base_env.get("OPENCODE_CONFIG_CONTENT", ""), read_only=read_only
+    )
     if config_content is not None:
         overrides["OPENCODE_CONFIG_CONTENT"] = config_content
 
     return overrides
 
 
-def _merge_config_content(existing: str) -> str | None:
+def _merge_config_content(existing: str, read_only: bool = False) -> str | None:
     """Accorde les permissions webfetch/websearch a OpenCode.
 
     Passe par ``OPENCODE_CONFIG_CONTENT`` (config inline, priorite la
@@ -750,13 +1161,19 @@ def _merge_config_content(existing: str) -> str | None:
     peut lui-meme y ecrire par erreur) couperait l'acces au web sans
     cette surcharge.
 
+    En mode ``read_only`` (session Plan), les outils d'ecriture
+    ``edit``/``write``/``bash`` sont FORCEMENT refuses : le planner ne
+    doit jamais pouvoir modifier le code ni executer de commandes.
+
     Args:
         existing: Valeur actuelle de ``OPENCODE_CONFIG_CONTENT``.
+        read_only: Refuse forcement les outils d'ecriture.
 
     Returns:
         Le JSON fusionne, ou None s'il ne faut pas toucher a la valeur
         existante (JSON invalide : l'ecraser ferait perdre la config
-        posee par l'utilisateur).
+        posee par l'utilisateur — sauf en lecture seule, ou les refus
+        doivent etre poses a tout prix).
     """
     config: dict = {}
     if existing.strip():
@@ -767,20 +1184,29 @@ def _merge_config_content(existing: str) -> str | None:
                 "[agent] OPENCODE_CONFIG_CONTENT n'est pas un JSON valide : "
                 "permissions web laissees en l'etat."
             )
-            return None
-        if not isinstance(parsed, dict):
-            _log(
-                "[agent] OPENCODE_CONFIG_CONTENT n'est pas un objet JSON : "
-                "permissions web laissees en l'etat."
-            )
-            return None
-        config = parsed
+            if not read_only:
+                return None
+        else:
+            if not isinstance(parsed, dict):
+                _log(
+                    "[agent] OPENCODE_CONFIG_CONTENT n'est pas un objet JSON : "
+                    "permissions web laissees en l'etat."
+                )
+                if not read_only:
+                    return None
+            else:
+                config = parsed
 
     permission = config.get("permission")
     if not isinstance(permission, dict):
         permission = {}
     for tool in ("webfetch", "websearch"):
         permission.setdefault(tool, "allow")
+    if read_only:
+        # Session Plan : refus stricts, ils ecrasent toute valeur
+        # anterieure (y compris un `allow` de l'utilisateur).
+        for tool in ("edit", "write", "bash"):
+            permission[tool] = "deny"
     config["permission"] = permission
 
     return json.dumps(config)
@@ -898,41 +1324,6 @@ def _handle_barriers(target_dir: Path, barrier_files: list[Path]) -> None:
             if is_done(target_dir):
                 return
             time.sleep(5)
-
-
-def _update_state_files(
-    target_dir: Path,
-    result: subprocess.CompletedProcess,
-    suggestions_md: str,
-    progress_before: str,
-) -> None:
-    if result.returncode != 0:
-        stderr = result.stderr.strip() if result.stderr else ""
-        stdout = result.stdout.strip() if result.stdout else ""
-        detail = (stderr or stdout)[-500:]
-        update_progress(
-            target_dir,
-            f"- **Action realisee** : Tentative d'iteration\n"
-            f"- **Resultat** : ECHEC (code {result.returncode})\n"
-            f"- **Problemes rencontres** : {detail}\n"
-            f"- **Solutions envisagees** : Verifier la cle API et la configuration d'OpenCode.\n",
-        )
-    elif result.stdout.strip():
-        # L'agent est deja instruit de mettre a jour PROGRESS.md
-        # lui-meme pendant la session OpenCode (consigne #4 du
-        # prompt). S'il l'a fait, ne pas ecraser son entree structuree
-        # avec le transcript brut (verbeux, --log-level DEBUG). On ne
-        # retombe sur un extrait de la sortie brute (tronque : le
-        # detail complet est deja dans OPENCODE_LOG.txt) que si
-        # PROGRESS.md n'a pas bouge, en garde-fou.
-        progress_after = read_state(target_dir, "PROGRESS.md")
-        if progress_after == progress_before:
-            update_progress(
-                target_dir, result.stdout.strip()[-_MAX_FALLBACK_PROGRESS_CHARS:]
-            )
-
-    if suggestions_md.strip():
-        clear_suggestions(target_dir)
 
 
 def _log(message: str) -> None:
