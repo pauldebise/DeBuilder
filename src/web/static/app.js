@@ -205,12 +205,42 @@ function renderCoverage(coverage) {
   label.textContent = `${coverage.done} / ${coverage.total} items couverts (${coverage.percent}%)`;
 }
 
+const MISSION_BANNERS = {
+  completed: {
+    text: "**Mission validée et terminée.** La boucle s'est arrêtée proprement.",
+    cls: "alert-success",
+  },
+  stopped: {
+    text: "La boucle a été arrêtée (intervention manuelle).",
+    cls: "alert-warning",
+  },
+  dead: {
+    text: "**La boucle agent ne tourne plus** (crash ou arrêt externe). Consultez les logs avant de relancer.",
+    cls: "alert-warning",
+  },
+};
+
+function renderMissionBanner(status) {
+  const banner = qs("mission-banner");
+  const cfg = status ? MISSION_BANNERS[status.state] : null;
+  if (!cfg) {
+    banner.classList.add("hidden");
+    return;
+  }
+  qs("mission-text").innerHTML = window.marked
+    ? window.marked.parse(cfg.text)
+    : escapeHtml(cfg.text);
+  banner.classList.remove("hidden", "alert-success", "alert-warning", "alert-danger");
+  banner.classList.add(cfg.cls);
+}
+
 async function refreshDashboard() {
   const resp = await fetch(`/api/dashboard?target_dir=${encodeURIComponent(state.targetDir)}`);
   if (!resp.ok) return;
   const data = await resp.json();
 
   renderLoopStatus(data.loop_status);
+  renderMissionBanner(data.loop_status);
   renderCoverage(data.coverage);
   renderMarkdownInto("activity-text", data.activity_text);
   setAlertBanner("system-alerts", data.system_alerts);
@@ -323,6 +353,19 @@ function bindDashboardControls() {
 
   qs("barrier-enable-btn").addEventListener("click", () => setBarrier(true));
   qs("barrier-disable-btn").addEventListener("click", () => setBarrier(false));
+
+  qs("new-session-btn").addEventListener("click", async () => {
+    if (!confirm("Démarrer une nouvelle session ? Le projet cible reste intact ; l'écran de configuration s'affichera.")) {
+      return;
+    }
+    try {
+      await fetch("/api/session/clear", { method: "POST" });
+    } catch (err) {
+      // Même si l'appel échoue, on retombe sur l'écran de config au
+      // prochain chargement : ne pas bloquer l'utilisateur ici.
+    }
+    location.reload();
+  });
 
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));

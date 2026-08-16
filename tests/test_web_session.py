@@ -64,6 +64,26 @@ def test_get_session_returns_active_session(tmp_path: Path, monkeypatch):
     assert resp.json() == {"target_dir": str(target_dir)}
 
 
+def test_clear_session_forgets_active_session(tmp_path: Path, monkeypatch):
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("DEBUILDER_STATE_DIR", str(state_dir))
+
+    target_dir = tmp_path / "project"
+    target_dir.mkdir()
+    (target_dir / "AGENTS.md").write_text("# Objectifs")
+    save_last_session(target_dir, state_dir=state_dir)
+
+    resp = client.post("/api/session/clear")
+
+    assert resp.status_code == 200
+    assert client.get("/api/session").json() == {"target_dir": None}
+
+
+def test_clear_session_is_noop_without_session():
+    resp = client.post("/api/session/clear")
+    assert resp.status_code == 200
+
+
 def test_get_session_ignores_deleted_project(tmp_path: Path, monkeypatch):
     state_dir = tmp_path / "state"
     monkeypatch.setenv("DEBUILDER_STATE_DIR", str(state_dir))

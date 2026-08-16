@@ -98,6 +98,8 @@ L'interface web tient sur une seule page, sans navigation par onglets pour l'ess
 
 La session active est mémorisée (`~/.debuilder/last_session.txt`) : un F5 pendant qu'une session tourne revient directement sur le tableau de bord (le backend est interrogé au chargement via `GET /api/session`), sans repasser par l'écran de configuration — y compris si l'interface a redémarré alors que la boucle agent tournait encore en arrière-plan.
 
+Quand la mission est terminée (validée par la session Review) ou que la boucle s'est arrêtée, une bannière apparaît au tableau de bord avec un bouton « Démarrer une nouvelle session » (`POST /api/session/clear`) qui oublie la session active et ramène à l'écran de configuration, sans toucher au dépôt du projet cible.
+
 ## Fichiers d'état du projet cible
 
 Ces fichiers sont créés dans le répertoire du projet cible (jamais dans celui de DeBuilder) et constituent le seul canal de communication entre l'agent et la GUI :

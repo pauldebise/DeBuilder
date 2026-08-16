@@ -281,6 +281,16 @@ textarea {
   color: #ffd68a;
 }
 
+.alert-banner.alert-success {
+  background: rgba(63, 185, 80, 0.15);
+  border: 1px solid #3fb950;
+  color: #7fe0ab;
+}
+
+#mission-banner button {
+  margin-top: 0.6rem;
+}
+
 /* Progress bar (couverture du cahier des charges) */
 
 .progress-bar {

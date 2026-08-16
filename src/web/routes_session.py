@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from src.core.git import clone_repo, configure_git, ensure_gitignore, init_repo
 from src.core.loop_status import save_loop_pid
 from src.core.secrets import inject_secrets
-from src.core.session import load_last_session, save_last_session
+from src.core.session import clear_last_session, load_last_session, save_last_session
 from src.core.state import init_project_state
 from src.utils.hw_audit import audit_hardware, format_for_agent
 from src.utils.text import strip_ansi
@@ -84,6 +84,18 @@ def get_session() -> dict:
     """Renvoie la session active restauree, ou ``None`` si aucune."""
     target_dir = load_last_session()
     return {"target_dir": str(target_dir) if target_dir else None}
+
+
+@router.post("/api/session/clear")
+def clear_session() -> dict:
+    """Oublie la session active (bouton « Nouvelle session »).
+
+    Ne touche ni au depot cible ni a la boucle (deja arretee dans le
+    cas nominal) : supprime uniquement le suivi de session, pour que
+    l'ecran de configuration reapparaisse au prochain chargement.
+    """
+    clear_last_session()
+    return {"message": "Session oubliee. L'ecran de configuration va s'afficher."}
 
 
 @router.post("/api/session/start")
