@@ -108,6 +108,13 @@ function showScreen(id) {
 
 // --- Ecran de configuration ---------------------------------------------
 
+function intOrNull(raw) {
+  const v = String(raw).trim();
+  if (!v) return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
 function bindConfigForm() {
   qs("f-provider").addEventListener("change", () => {
     const defaultModel = PROVIDER_DEFAULT_MODELS[qs("f-provider").value];
@@ -128,6 +135,11 @@ function bindConfigForm() {
       github_token: qs("f-github-token").value.trim(),
       git_name: qs("f-git-name").value.trim(),
       git_email: qs("f-git-email").value.trim(),
+      max_iterations: intOrNull(qs("f-max-iterations").value),
+      max_hours: intOrNull(qs("f-max-hours").value),
+      web_tools: qs("f-web-tools").checked,
+      model_fallback: qs("f-model-fallback").value.trim(),
+      test_cmd: qs("f-test-cmd").value.trim(),
     };
 
     setStatus("config-status", "Démarrage en cours…", false);

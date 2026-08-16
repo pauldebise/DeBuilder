@@ -72,6 +72,36 @@
       </div>
     </div>
 
+    <details class="advanced-settings">
+      <summary>Paramètres avancés (optionnels)</summary>
+      <div class="form-grid advanced-grid">
+        <div class="form-col">
+          <label for="f-max-iterations">Cap d'itérations (0 = illimité)</label>
+          <input id="f-max-iterations" type="number" min="0" step="1" placeholder="0">
+          <p class="field-hint">Arrêt propre de la boucle après N itérations.</p>
+
+          <label for="f-max-hours">Budget de temps en heures (0 = illimité)</label>
+          <input id="f-max-hours" type="number" min="0" step="1" placeholder="0">
+          <p class="field-hint">Arrêt propre de la boucle après N heures.</p>
+
+          <label for="f-test-cmd">Commande de test</label>
+          <input id="f-test-cmd" type="text" placeholder="python -m pytest">
+          <p class="field-hint">Exécutée par la gate de la boucle à chaque itération (et par le hook pre-commit).</p>
+        </div>
+        <div class="form-col">
+          <label for="f-model-fallback">Modèle de secours</label>
+          <input id="f-model-fallback" type="text" placeholder="deepseek/deepseek-chat">
+          <p class="field-hint">Utilisé tant que le circuit breaker API est ouvert.</p>
+
+          <label class="checkbox-label">
+            <input id="f-web-tools" type="checkbox" checked>
+            Accès internet de l'agent (websearch + webfetch)
+          </label>
+          <p class="field-hint">Déconseillé sur un projet sensible.</p>
+        </div>
+      </div>
+    </details>
+
     <button type="submit" class="btn-primary btn-lg">Démarrer la session</button>
     <div id="config-status" class="status-msg markdown-body"></div>
   </form>

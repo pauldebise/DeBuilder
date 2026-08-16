@@ -130,6 +130,45 @@ textarea {
   resize: vertical;
 }
 
+.advanced-settings {
+  max-width: 900px;
+  margin: 1rem auto 0;
+  padding: 0.85rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.advanced-settings summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  user-select: none;
+}
+
+.advanced-settings summary:hover {
+  color: var(--text);
+}
+
+.advanced-settings .advanced-grid {
+  margin-top: 0.75rem;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent);
+}
+
 /* Tabs */
 
 .tabbar {

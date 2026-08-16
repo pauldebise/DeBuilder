@@ -177,6 +177,95 @@ def test_start_session_success_persists_last_session(tmp_path: Path, monkeypatch
     assert (workspace / "PROGRESS.md").exists()
 
 
+def test_start_session_passes_advanced_settings_to_loop_env(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "ws"
+    captured = {}
+
+    def fake_popen(*args, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return type("Proc", (), {"pid": 4242})()
+
+    monkeypatch.setattr(routes_session, "_find_opencode", lambda: "/usr/bin/opencode")
+    monkeypatch.setattr(routes_session, "_validate_opencode", lambda model: "")
+    monkeypatch.setattr(routes_session, "init_repo", lambda d: True)
+    monkeypatch.setattr(routes_session, "configure_git", lambda *a, **k: None)
+    monkeypatch.setattr(routes_session, "ensure_gitignore", lambda d: None)
+    monkeypatch.setattr(routes_session, "audit_hardware", lambda: object())
+    monkeypatch.setattr(routes_session, "format_for_agent", lambda hw: "CPU: 1")
+    monkeypatch.setattr(routes_session.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(routes_session, "save_last_session", lambda d: None)
+
+    resp = client.post(
+        "/api/session/start",
+        json={
+            "workspace_dir": str(workspace),
+            "provider": "Autre (custom)",
+            "model": "opencode/free-model",
+            "api_key": "unused",
+            "max_iterations": 12,
+            "max_hours": 5,
+            "web_tools": False,
+            "model_fallback": "openai/gpt-mini",
+            "test_cmd": "pytest -q",
+        },
+    )
+
+    assert resp.status_code == 200
+    env = captured["env"]
+    assert env["DEBUILDER_MAX_ITERATIONS"] == "12"
+    assert env["DEBUILDER_MAX_HOURS"] == "5"
+    assert env["DEBUILDER_WEB_TOOLS"] == "0"
+    assert env["DEBUILDER_MODEL_FALLBACK"] == "openai/gpt-mini"
+    assert env["DEBUILDER_TEST_CMD"] == "pytest -q"
+
+
+def test_start_session_omits_empty_advanced_settings_from_loop_env(
+    tmp_path: Path, monkeypatch
+):
+    workspace = tmp_path / "ws"
+    captured = {}
+
+    def fake_popen(*args, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return type("Proc", (), {"pid": 4242})()
+
+    monkeypatch.setattr(routes_session, "_find_opencode", lambda: "/usr/bin/opencode")
+    monkeypatch.setattr(routes_session, "_validate_opencode", lambda model: "")
+    monkeypatch.setattr(routes_session, "init_repo", lambda d: True)
+    monkeypatch.setattr(routes_session, "configure_git", lambda *a, **k: None)
+    monkeypatch.setattr(routes_session, "ensure_gitignore", lambda d: None)
+    monkeypatch.setattr(routes_session, "audit_hardware", lambda: object())
+    monkeypatch.setattr(routes_session, "format_for_agent", lambda hw: "CPU: 1")
+    monkeypatch.setattr(routes_session.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(routes_session, "save_last_session", lambda d: None)
+
+    resp = client.post(
+        "/api/session/start",
+        json={
+            "workspace_dir": str(workspace),
+            "provider": "Autre (custom)",
+            "model": "opencode/free-model",
+            "api_key": "unused",
+        },
+    )
+
+    assert resp.status_code == 200
+    env = captured["env"]
+    assert env["DEBUILDER_WEB_TOOLS"] == "1"
+    assert "DEBUILDER_MAX_ITERATIONS" not in env
+    assert "DEBUILDER_MAX_HOURS" not in env
+    assert "DEBUILDER_MODEL_FALLBACK" not in env
+    assert "DEBUILDER_TEST_CMD" not in env
+
+
+def test_start_session_rejects_negative_advanced_settings():
+    resp = client.post(
+        "/api/session/start",
+        json={"workspace_dir": "/tmp/nowhere", "api_key": "sk-x", "max_iterations": -1},
+    )
+    assert resp.status_code == 422
+
+
 def test_start_session_rejects_nonempty_workspace_without_repo(tmp_path: Path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir()

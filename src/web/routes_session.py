@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.core.git import clone_repo, configure_git, ensure_gitignore, init_repo
 from src.core.secrets import inject_secrets
@@ -53,7 +53,14 @@ PROVIDERS = {
 
 
 class SessionStartRequest(BaseModel):
-    """Corps de requete pour ``POST /api/session/start``."""
+    """Corps de requete pour ``POST /api/session/start``.
+
+    Les champs ``max_iterations``/``max_hours``/``web_tools``/
+    ``model_fallback``/``test_cmd`` sont les reglages avances de
+    l'ecran de configuration, injectes comme variables d'environnement
+    dans le processus de la boucle (jamais dans ce process serveur) :
+    ils ne sont lus que par ``agent_loop.sh`` et ``agent.py``.
+    """
 
     repo_url: str = ""
     workspace_dir: str
@@ -64,6 +71,11 @@ class SessionStartRequest(BaseModel):
     github_token: str = ""
     git_name: str = ""
     git_email: str = ""
+    max_iterations: int | None = Field(default=None, ge=0)
+    max_hours: int | None = Field(default=None, ge=0)
+    web_tools: bool = True
+    model_fallback: str = ""
+    test_cmd: str = ""
 
 
 @router.get("/api/session")
@@ -167,14 +179,28 @@ def start_session(payload: SessionStartRequest) -> dict:
         # resume LLM du tableau de bord (cf. src/core/log_summarizer.py).
         os.environ["DEBUILDER_MODEL"] = actual_model
 
+        loop_env = {
+            **os.environ,
+            "DEBUILDER_TARGET_DIR": str(target_dir),
+            "DEBUILDER_PYTHON": python_bin,
+            "DEBUILDER_MODEL": actual_model,
+            "DEBUILDER_WEB_TOOLS": "1" if payload.web_tools else "0",
+        }
+        # Reglages avances optionnels : absents de l'env de la boucle
+        # s'ils n'ont pas ete renseignes, pour laisser jouer les
+        # valeurs par defaut (0 = illimite pour les caps, etc.).
+        for key, value in (
+            ("DEBUILDER_MAX_ITERATIONS", payload.max_iterations),
+            ("DEBUILDER_MAX_HOURS", payload.max_hours),
+            ("DEBUILDER_MODEL_FALLBACK", payload.model_fallback.strip()),
+            ("DEBUILDER_TEST_CMD", payload.test_cmd.strip()),
+        ):
+            if value:
+                loop_env[key] = str(value)
+
         subprocess.Popen(
             ["bash", str(agent_script)],
-            env={
-                **os.environ,
-                "DEBUILDER_TARGET_DIR": str(target_dir),
-                "DEBUILDER_PYTHON": python_bin,
-                "DEBUILDER_MODEL": actual_model,
-            },
+            env=loop_env,
         )
 
         save_last_session(target_dir)
