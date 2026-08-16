@@ -281,6 +281,31 @@ textarea {
   color: #ffd68a;
 }
 
+/* Progress bar (couverture du cahier des charges) */
+
+.progress-bar {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  height: 14px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  background: var(--accent);
+  height: 100%;
+  transition: width 0.5s ease;
+}
+
+.progress-fill.complete {
+  background: #3fb950;
+}
+
+#coverage-progress p {
+  margin: 0.4rem 0 0;
+  font-size: 0.85rem;
+}
+
 /* Terminal / logs */
 
 .logs-card {

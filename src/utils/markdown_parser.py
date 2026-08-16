@@ -10,6 +10,9 @@ from typing import Any
 _SECTION_RE = re.compile(r"^## (.+)$", re.MULTILINE)
 _TABLE_ROW_RE = re.compile(r"^\|(.+)\|$")
 _TABLE_SEP_RE = re.compile(r"^\|(?:[-:\s]+\|)+\s*$")
+_COVERAGE_SUMMARY_RE = re.compile(
+    r"couverture\s*:\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE
+)
 _ALERT_KEYWORDS = [
     "stagnation",
     "bottleneck",
@@ -53,6 +56,61 @@ def parse_progress(content: str) -> dict[str, Any]:
         result["previous_iterations"] = [body for _, body in iteration_sections[1:]]
 
     return result
+
+
+def parse_coverage(content: str) -> dict[str, int] | None:
+    """Couverture du cahier des charges depuis SPEC_COVERAGE.md.
+
+    Deux sources, par ordre de preference :
+    1. la ligne de bilan « Couverture : X / N ... » maintenue par la
+       session Plan (source de verite : N est le nombre total d'items
+       du cahier des charges) ;
+    2. en repli, le comptage des lignes du tableau dont les colonnes
+       d'implementation et de test sont renseignees (les lignes n'y
+       figurant qu'une fois l'item traite, ce repli vaut surtout pour
+       les fichiers d'etat crees avant l'introduction du bilan).
+
+    Args:
+        content: Contenu brut de SPEC_COVERAGE.md.
+
+    Returns:
+        ``{"done": x, "total": n, "percent": p}`` ou None si le
+        fichier ne fournit aucune information exploitable.
+    """
+    summary = _COVERAGE_SUMMARY_RE.search(content)
+    if summary:
+        done, total = int(summary.group(1)), int(summary.group(2))
+        if total > 0:
+            done = min(done, total)
+            return {"done": done, "total": total, "percent": round(done * 100 / total)}
+
+    done = 0
+    total = 0
+    for table in _extract_tables(content):
+        for row in table:
+            impl_cell = _cell_like(row, "implement")
+            test_cell = _cell_like(row, "test")
+            if impl_cell is None and test_cell is None:
+                continue
+            total += 1
+            if impl_cell and test_cell:
+                done += 1
+    if total == 0:
+        return None
+    return {"done": done, "total": total, "percent": round(done * 100 / total)}
+
+
+def _cell_like(row: dict[str, str], fragment: str) -> str | None:
+    """Cellule de la ligne dont l'entete contient ``fragment``.
+
+    Returns:
+        La valeur nettoyee ("" si vide), ou None si la colonne
+        n'existe pas du tout dans cette ligne.
+    """
+    for header, value in row.items():
+        if fragment in header.lower():
+            return (value or "").strip()
+    return None
 
 
 def parse_benchmarks(content: str) -> list[dict[str, str]]:

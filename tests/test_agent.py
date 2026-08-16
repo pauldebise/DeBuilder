@@ -189,6 +189,18 @@ def test_plan_prompt_contains_cahier_des_charges():
     assert "```PLAN" in prompt
 
 
+def test_plan_prompt_instructs_coverage_bilan():
+    prompt = _build_plan_prompt(
+        agents_md="# Objectif",
+        progress_md="",
+        plan_md="",
+        spec_md="",
+        gate_state="Gates OK.",
+    )
+    assert "Couverture : X / N items" in prompt
+    assert "constant d'une iteration a" in prompt
+
+
 def test_implement_prompt_contains_task_and_context():
     prompt = _build_implement_prompt(
         task_md="# Tache\n\n## Sous-Taches\n\n- [ ] creer main.py",

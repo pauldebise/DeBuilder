@@ -16,7 +16,12 @@ from src.core.iterations import read_entries
 from src.core.log_summarizer import summarize_logs
 from src.core.loop_status import compute_loop_status
 from src.core.state import read_state
-from src.utils.markdown_parser import parse_alerts, parse_benchmarks, parse_progress
+from src.utils.markdown_parser import (
+    parse_alerts,
+    parse_benchmarks,
+    parse_coverage,
+    parse_progress,
+)
 from src.utils.text import read_log_tail
 
 router = APIRouter()
@@ -36,6 +41,7 @@ _NO_SESSION_DASHBOARD = {
     "alerts_text": "*Aucune alerte.*",
     "circuit_breaker": None,
     "loop_status": {"state": "none"},
+    "coverage": None,
 }
 
 
@@ -159,4 +165,5 @@ def _get_dashboard_data(target_dir: Path) -> dict:
         "alerts_text": alerts_text,
         "circuit_breaker": breaker_state,
         "loop_status": compute_loop_status(target_dir),
+        "coverage": parse_coverage(read_state(target_dir, "SPEC_COVERAGE.md")),
     }

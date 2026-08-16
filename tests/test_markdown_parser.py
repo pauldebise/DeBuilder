@@ -93,3 +93,44 @@ def test_parse_progress_no_next_task():
     result = parse_progress(content)
     assert "Did stuff" in result["latest_iteration"]
     assert result["next_task"] == ""
+
+
+# --- Couverture SPEC_COVERAGE.md ---------------------------------------------
+
+from src.utils.markdown_parser import parse_coverage
+
+
+def test_parse_coverage_from_summary_line():
+    content = (
+        "# Couverture du Cahier des Charges\n\n"
+        "**Couverture : 3 / 5 items implementes et testes.**\n\n"
+        "## Items\n\n| Item | Implemente dans | Test associe |\n|---|---|---|\n"
+    )
+    assert parse_coverage(content) == {"done": 3, "total": 5, "percent": 60}
+
+
+def test_parse_coverage_summary_caps_done_at_total():
+    content = "**Couverture : 9 / 5 items implementes et testes.**"
+    assert parse_coverage(content) == {"done": 5, "total": 5, "percent": 100}
+
+
+def test_parse_coverage_falls_back_to_table_rows():
+    content = (
+        "# Couverture\n\n## Items\n\n"
+        "| Item du cahier des charges | Implemente dans | Test associe |\n"
+        "|---|---|---|\n"
+        "| Item 1 | src/main.py | tests/test_main.py |\n"
+        "| Item 2 |  |  |\n"
+        "| Item 3 | src/util.py | tests/test_util.py |\n"
+    )
+    assert parse_coverage(content) == {"done": 2, "total": 3, "percent": 67}
+
+
+def test_parse_coverage_none_when_no_information():
+    assert parse_coverage("") is None
+    assert parse_coverage("# Couverture\n\nRien encore.\n") is None
+
+
+def test_parse_coverage_percent_rounding():
+    content = "**Couverture : 2 / 3 items implementes et testes.**"
+    assert parse_coverage(content)["percent"] == 67

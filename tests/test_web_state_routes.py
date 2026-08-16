@@ -191,6 +191,25 @@ def test_dashboard_without_session_exposes_none_loop_status():
     assert resp.json()["loop_status"] == {"state": "none"}
 
 
+def test_dashboard_exposes_coverage_from_spec(tmp_path: Path):
+    (tmp_path / "SPEC_COVERAGE.md").write_text(
+        "**Couverture : 2 / 4 items implementes et testes.**",
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/dashboard", params={"target_dir": str(tmp_path)})
+
+    assert resp.status_code == 200
+    assert resp.json()["coverage"] == {"done": 2, "total": 4, "percent": 50}
+
+
+def test_dashboard_exposes_coverage_none_without_spec(tmp_path: Path):
+    resp = client.get("/api/dashboard", params={"target_dir": str(tmp_path)})
+
+    assert resp.status_code == 200
+    assert resp.json()["coverage"] is None
+
+
 # --- Journal d'iterations (route /api/iterations, cdc §5.2) ------------------
 
 

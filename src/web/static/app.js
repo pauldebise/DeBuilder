@@ -192,12 +192,26 @@ function renderLoopStatus(status) {
   el.textContent = cfg.text(status);
 }
 
+function renderCoverage(coverage) {
+  const fill = qs("coverage-fill");
+  const label = qs("coverage-label");
+  if (!coverage) {
+    fill.style.width = "0%";
+    label.textContent = "En attente de la première planification.";
+    return;
+  }
+  fill.style.width = `${coverage.percent}%`;
+  fill.classList.toggle("complete", coverage.done >= coverage.total);
+  label.textContent = `${coverage.done} / ${coverage.total} items couverts (${coverage.percent}%)`;
+}
+
 async function refreshDashboard() {
   const resp = await fetch(`/api/dashboard?target_dir=${encodeURIComponent(state.targetDir)}`);
   if (!resp.ok) return;
   const data = await resp.json();
 
   renderLoopStatus(data.loop_status);
+  renderCoverage(data.coverage);
   renderMarkdownInto("activity-text", data.activity_text);
   setAlertBanner("system-alerts", data.system_alerts);
   setAlertBanner("watchdog-alerts", hasRealAlert(data.alerts_text) ? data.alerts_text : "");
