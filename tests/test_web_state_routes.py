@@ -105,6 +105,56 @@ def test_rollback_requires_target_dir():
     assert resp.status_code == 400
 
 
+def test_rollback_to_tag_reverts(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "f.txt").write_text("v1")
+    commit_all(repo_dir, "c1")
+    _run(repo_dir, "tag", "debuilder/iter-0001")
+    (repo_dir / "f.txt").write_text("v2")
+    commit_all(repo_dir, "c2")
+
+    resp = client.post(
+        "/api/control/rollback",
+        json={"target_dir": str(repo_dir), "to": "debuilder/iter-0001"},
+    )
+
+    assert resp.status_code == 200
+    assert (repo_dir / "f.txt").read_text() == "v1"
+
+
+def test_rollback_to_unknown_tag_returns_400(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "f.txt").write_text("v1")
+    commit_all(repo_dir, "c1")
+
+    resp = client.post(
+        "/api/control/rollback",
+        json={"target_dir": str(repo_dir), "to": "debuilder/iter-9999"},
+    )
+
+    assert resp.status_code == 400
+
+
+def test_list_tags_returns_iteration_tags(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "f.txt").write_text("v1")
+    commit_all(repo_dir, "c1")
+    _run(repo_dir, "tag", "debuilder/iter-0001")
+
+    resp = client.get("/api/tags", params={"target_dir": str(repo_dir)})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"tags": ["debuilder/iter-0001"]}
+
+
+def test_list_tags_requires_target_dir():
+    resp = client.get("/api/tags", params={"target_dir": ""})
+    assert resp.status_code == 400
+
+
 # --- Barrieres ---------------------------------------------------------------
 
 

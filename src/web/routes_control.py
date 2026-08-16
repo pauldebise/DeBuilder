@@ -7,10 +7,10 @@ rollback, barrieres (Human-in-the-Loop). Reutilise directement
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from src.core.git import rollback_last
+from src.core.git import list_iteration_tags, rollback_last, rollback_to_tag
 from src.core.state import append_state, touch_done
 
 router = APIRouter()
@@ -29,6 +29,11 @@ class BarrierBody(BaseModel):
     target_dir: str
     barrier_type: str
     enabled: bool
+
+
+class RollbackBody(BaseModel):
+    target_dir: str
+    to: str | None = None
 
 
 @router.post("/api/suggestions")
@@ -53,14 +58,36 @@ def activate_kill_switch(payload: TargetDirBody) -> dict:
 
 
 @router.post("/api/control/rollback")
-def do_rollback(payload: TargetDirBody) -> dict:
-    """Annule le dernier commit du depot cible (git reset --hard HEAD~1)."""
+def do_rollback(payload: RollbackBody) -> dict:
+    """Annule le dernier commit ou revient a un tag d'iteration.
+
+    ``to`` vide/absent : annule le dernier commit (HEAD~1). ``to``
+    defini (ex: ``debuilder/iter-0012``) : reinitialise le depot sur ce
+    tag (``git reset --hard <tag>``).
+    """
     if not payload.target_dir.strip():
         raise HTTPException(400, "Aucune session active.")
-    success = rollback_last(Path(payload.target_dir))
+    target_dir = Path(payload.target_dir)
+
+    if payload.to and payload.to.strip():
+        tag = payload.to.strip()
+        success = rollback_to_tag(target_dir, tag)
+        if not success:
+            raise HTTPException(400, f"Le rollback vers le tag {tag} a echoue.")
+        return {"message": f"Rollback effectue vers {tag}."}
+
+    success = rollback_last(target_dir)
     if not success:
         raise HTTPException(400, "Le rollback a echoue.")
     return {"message": "Rollback effectue. Le dernier commit a ete annule (HEAD~1)."}
+
+
+@router.get("/api/tags")
+def list_tags(target_dir: str = Query(...)) -> dict:
+    """Liste les tags d'iteration du depot cible (plus recent d'abord)."""
+    if not target_dir.strip():
+        raise HTTPException(400, "Aucune session active.")
+    return {"tags": list_iteration_tags(Path(target_dir))}
 
 
 @router.post("/api/control/barrier")

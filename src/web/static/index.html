@@ -127,7 +127,12 @@
           <h3>Contrôles</h3>
           <div class="control-row">
             <button id="kill-btn" class="btn-danger">Arrêt d'urgence</button>
-            <button id="rollback-btn" class="btn-warning">Rollback HEAD~1</button>
+          </div>
+          <div class="control-row">
+            <select id="rollback-target" class="rollback-select">
+              <option value="">Dernier commit (HEAD~1)</option>
+            </select>
+            <button id="rollback-btn" class="btn-warning">Rollback</button>
           </div>
           <p id="control-status" class="status-msg small"></p>
 

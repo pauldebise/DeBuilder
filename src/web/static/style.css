@@ -306,6 +306,11 @@ button {
   min-width: 120px;
 }
 
+.rollback-select {
+  flex: 1;
+  min-width: 120px;
+}
+
 form textarea {
   margin-bottom: 0.4rem;
 }

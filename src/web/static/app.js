@@ -180,6 +180,29 @@ async function refreshRequests() {
   renderMarkdownInto("requests-content", data.content);
 }
 
+async function refreshTags() {
+  const resp = await fetch(`/api/tags?target_dir=${encodeURIComponent(state.targetDir)}`);
+  if (!resp.ok) return;
+  const data = await resp.json();
+  populateRollbackTargets(data.tags || []);
+}
+
+function populateRollbackTargets(tags) {
+  const select = qs("rollback-target");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = '<option value="">Dernier commit (HEAD~1)</option>';
+  for (const tag of tags) {
+    const option = document.createElement("option");
+    option.value = tag;
+    option.textContent = tag;
+    select.appendChild(option);
+  }
+  if (Array.from(select.options).some((opt) => opt.value === current)) {
+    select.value = current;
+  }
+}
+
 function bindDashboardControls() {
   qs("suggestion-form").addEventListener("submit", async (evt) => {
     evt.preventDefault();
@@ -222,16 +245,19 @@ function bindDashboardControls() {
   });
 
   qs("rollback-btn").addEventListener("click", async () => {
-    if (!confirm("Annuler le dernier commit du dépôt cible (git reset --hard HEAD~1) ? Cette action est destructive.")) {
+    const to = qs("rollback-target").value;
+    const label = to ? `revenir au tag ${to}` : "annuler le dernier commit (HEAD~1)";
+    if (!confirm(`Rollback : ${label} (git reset --hard) ? Cette action est destructive.`)) {
       return;
     }
     const resp = await fetch("/api/control/rollback", {
       method: "POST",
       headers: jsonHeaders(),
-      body: JSON.stringify({ target_dir: state.targetDir }),
+      body: JSON.stringify({ target_dir: state.targetDir, to }),
     });
     const data = await resp.json();
     setStatus("control-status", resp.ok ? data.message : data.detail || "Erreur.", !resp.ok);
+    if (resp.ok) refreshTags();
   });
 
   qs("barrier-enable-btn").addEventListener("click", () => setBarrier(true));
@@ -335,6 +361,7 @@ function startDashboard(targetDir) {
 
   refreshDashboard();
   refreshRequests();
+  refreshTags();
   startLogStream();
   switchTab("dashboard");
 
