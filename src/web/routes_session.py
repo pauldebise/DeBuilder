@@ -154,6 +154,7 @@ def start_session(payload: SessionStartRequest) -> dict:
             target_dir,
             instructions=payload.instructions.strip(),
             hardware_info=hw_text,
+            fresh_repo=not repo_url,
         )
 
         agent_script = (

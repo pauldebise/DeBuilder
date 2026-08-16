@@ -1,0 +1,34 @@
+#!/bin/sh
+# Installe par DeBuilder (session vierge uniquement, jamais sur un
+# clone, jamais en ecrasant un hook existant).
+#
+# Gate de tests pre-commit (cahier des charges §5.4) : refuse tout
+# commit dont la suite de tests est en echec. La commande est resolue
+# dans cet ordre :
+#   1. section « Commande de test » de TASK.md,
+#   2. section « Commande de test » d'AGENTS.md,
+#   3. variable d'environnement DEBUILDER_TEST_CMD.
+# Aucune commande resolue : le commit passe (projet sans suite de
+# tests encore definie).
+
+extract_test_cmd() {
+    awk '
+        tolower($0) ~ /^#+ *commande de test/ { sec = 1; next }
+        sec && /^```/ { if (inblock) { print buf; exit } inblock = 1; buf = ""; next }
+        sec && inblock { buf = buf $0 "\n"; next }
+        sec && /^[ \t]*$/ { next }
+        sec && !inblock { print; exit }
+        END { if (sec && inblock) print buf }
+    ' "$1" 2>/dev/null
+}
+
+cmd="${DEBUILDER_TEST_CMD:-}"
+[ -n "$cmd" ] || cmd="$(extract_test_cmd TASK.md)"
+[ -n "$cmd" ] || cmd="$(extract_test_cmd AGENTS.md)"
+[ -z "$cmd" ] && exit 0
+
+echo "[DeBuilder] pre-commit : execution de la suite de tests..." >&2
+/bin/sh -c "$cmd" || {
+    echo "[DeBuilder] pre-commit : tests en echec, commit refuse (corrige les tests, ou retire ce hook si la suite n'est plus pertinente)." >&2
+    exit 1
+}

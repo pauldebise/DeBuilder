@@ -1,5 +1,8 @@
 """Tests pour le module state.py."""
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from src.core.state import (
@@ -12,6 +15,16 @@ from src.core.state import (
     update_progress,
     write_state,
 )
+
+
+def _git(repo_dir: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git"] + list(args),
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_init_project_state(tmp_path: Path):
@@ -111,3 +124,75 @@ def test_clear_suggestions(tmp_path: Path):
     clear_suggestions(tmp_path)
     content = read_state(tmp_path, "SUGGESTIONS.md")
     assert content == ""
+
+
+# --- Hook pre-commit de tests ----------------------------------------------
+
+
+def test_init_project_state_installs_hook_on_fresh_repo(tmp_path: Path):
+    from src.core.git import init_repo
+
+    assert init_repo(tmp_path)
+    init_project_state(tmp_path, instructions="Test", fresh_repo=True)
+
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    assert hook.exists()
+    assert os.access(hook, os.X_OK)
+
+
+def test_init_project_state_no_hook_by_default(tmp_path: Path):
+    from src.core.git import init_repo
+
+    assert init_repo(tmp_path)
+    init_project_state(tmp_path, instructions="Test")
+
+    assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
+
+
+def test_init_project_state_never_overwrites_existing_hook(tmp_path: Path):
+    from src.core.git import init_repo
+
+    assert init_repo(tmp_path)
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 0\n")
+
+    init_project_state(tmp_path, instructions="Test", fresh_repo=True)
+
+    assert hook.read_text() == "#!/bin/sh\nexit 0\n"
+
+
+def test_init_project_state_hook_without_git_is_noop(tmp_path: Path):
+    init_project_state(tmp_path, instructions="Test", fresh_repo=True)
+
+    assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
+
+
+def test_installed_hook_blocks_broken_commit(tmp_path: Path):
+    from src.core.git import init_repo
+
+    assert init_repo(tmp_path)
+    init_project_state(tmp_path, instructions="Test", fresh_repo=True)
+    _git(tmp_path, "config", "user.email", "test@test.com")
+    _git(tmp_path, "config", "user.name", "Test")
+
+    write_state(
+        tmp_path,
+        "AGENTS.md",
+        "# Objectif\n\n## Commande de Test\n\n```\n"
+        + f"{sys.executable} -m pytest -q\n"
+        + "```\n",
+    )
+    (tmp_path / "test_sample.py").write_text("def test_ko():\n    assert False\n")
+
+    result = _git(tmp_path, "add", "-A")
+    result = _git(tmp_path, "commit", "-m", "etat casse")
+
+    assert result.returncode != 0
+    assert "tests en echec" in result.stderr
+
+    # Une fois les tests corriges, le meme commit passe.
+    (tmp_path / "test_sample.py").write_text("def test_ok():\n    assert True\n")
+    result = _git(tmp_path, "add", "-A")
+    result = _git(tmp_path, "commit", "-m", "etat corrige")
+
+    assert result.returncode == 0

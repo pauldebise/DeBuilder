@@ -33,6 +33,7 @@ def init_project_state(
     target_dir: Path,
     instructions: str = "",
     hardware_info: str = "",
+    fresh_repo: bool = False,
 ) -> None:
     """Initialise les fichiers d'etat dans le repertoire cible.
 
@@ -40,6 +41,9 @@ def init_project_state(
         target_dir: Chemin du repertoire du projet cible.
         instructions: Objectif initial (cahier des charges).
         hardware_info: Infos materielles pour l'agent.
+        fresh_repo: True si le depot vient d'etre cree par DeBuilder
+            (session vierge, jamais un clone) : installe alors le hook
+            pre-commit de tests.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -51,6 +55,38 @@ def init_project_state(
     _write_file(target_dir / "BENCHMARKS.md", "# Benchmarks\n\n")
     _touch(target_dir / "SUGGESTIONS.md")
     _touch(target_dir / "RESOURCES_NEEDED.md")
+
+    if fresh_repo:
+        install_test_hook(target_dir)
+
+
+def install_test_hook(target_dir: Path) -> bool:
+    """Installe le hook pre-commit de tests (session vierge uniquement).
+
+    Garanties (cahier des charges §5.4) :
+    - jamais en ecrasant un hook existant (depot deja configure) ;
+    - sans effet si ``.git/hooks`` n'existe pas.
+
+    Args:
+        target_dir: Chemin du depot Git cible.
+
+    Returns:
+        True si le hook a ete installe, False sinon.
+    """
+    hooks_dir = target_dir / ".git" / "hooks"
+    if not hooks_dir.is_dir():
+        return False
+    hook_path = hooks_dir / "pre-commit"
+    if hook_path.exists():
+        return False
+
+    template = (_TEMPLATES_DIR / "pre-commit.tmpl").read_text(encoding="utf-8")
+    _write_file(hook_path, template)
+    try:
+        hook_path.chmod(hook_path.stat().st_mode | 0o111)
+    except OSError:
+        pass
+    return True
 
 
 def read_state(target_dir: Path, filename: str) -> str:
