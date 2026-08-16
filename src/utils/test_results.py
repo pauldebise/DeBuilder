@@ -22,12 +22,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.state import read_state
+from src.utils.task_parser import extract_test_command
 
 # Duree maximale de la gate : une suite de tests qui ne termine pas ne
 # doit pas figer la boucle autonome.
 _DEFAULT_TIMEOUT_SECONDS = 1800
-
-_TEST_SECTION_RE = re.compile(r"^#+\s*commande de test", re.IGNORECASE | re.MULTILINE)
 
 
 @dataclass
@@ -128,7 +127,7 @@ def resolve_test_command(target_dir: Path) -> str:
         content = read_state(target_dir, filename)
         if not content:
             continue
-        command = _extract_test_command_from_md(content)
+        command = extract_test_command(content)
         if command:
             return command
     return os.environ.get("DEBUILDER_TEST_CMD", "").strip()
@@ -232,32 +231,3 @@ def _is_pytest_command(tokens: list[str]) -> bool:
         and tokens[1] == "-m"
         and tokens[2].startswith("pytest")
     )
-
-
-def _extract_test_command_from_md(content: str) -> str:
-    """Extrait la commande d'une section « Commande de test ».
-
-    Cherche la premiere ligne de titre contenant « commande de test »,
-    puis dans la section qui suit : le premier bloc de code delimite
-    par des triples backticks, sinon la premiere ligne non vide.
-
-    Args:
-        content: Contenu Markdown (TASK.md ou AGENTS.md).
-
-    Returns:
-        La commande extraite, ou chaine vide.
-    """
-    match = _TEST_SECTION_RE.search(content)
-    if not match:
-        return ""
-    section = content[match.end():]
-    section = section.split("\n#", 1)[0]
-
-    block_match = re.search(r"```[^\n]*\n(.*?)```", section, re.DOTALL)
-    if block_match:
-        return block_match.group(1).strip()
-    for line in section.splitlines():
-        stripped = line.strip()
-        if stripped:
-            return stripped
-    return ""

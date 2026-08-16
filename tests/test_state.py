@@ -35,10 +35,18 @@ def test_init_project_state(tmp_path: Path):
     assert (tmp_path / "BENCHMARKS.md").exists()
     assert (tmp_path / "SUGGESTIONS.md").exists()
     assert (tmp_path / "RESOURCES_NEEDED.md").exists()
+    assert (tmp_path / "TASK.md").exists()
+    assert (tmp_path / "PLAN.md").exists()
+    assert (tmp_path / "ARCHITECTURE.md").exists()
+    assert (tmp_path / "SPEC_COVERAGE.md").exists()
 
     agents = read_state(tmp_path, "AGENTS.md")
     assert "Build a web app" in agents
     assert "GPU: A100" in agents
+
+    task = read_state(tmp_path, "TASK.md")
+    assert "## Objectif" in task
+    assert "## Sous-Taches" in task
 
 
 def test_read_write_state(tmp_path: Path):

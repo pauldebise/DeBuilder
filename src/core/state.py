@@ -20,6 +20,10 @@ STATE_FILES = [
     "BENCHMARKS.md",
     "SUGGESTIONS.md",
     "RESOURCES_NEEDED.md",
+    "TASK.md",
+    "PLAN.md",
+    "ARCHITECTURE.md",
+    "SPEC_COVERAGE.md",
     "DONE",
 ]
 
@@ -55,6 +59,10 @@ def init_project_state(
     _write_file(target_dir / "BENCHMARKS.md", "# Benchmarks\n\n")
     _touch(target_dir / "SUGGESTIONS.md")
     _touch(target_dir / "RESOURCES_NEEDED.md")
+    _write_file(target_dir / "TASK.md", _render_template("TASK.md.tmpl"))
+    _write_file(target_dir / "PLAN.md", _render_template("PLAN.md.tmpl"))
+    _write_file(target_dir / "ARCHITECTURE.md", _render_template("ARCHITECTURE.md.tmpl"))
+    _write_file(target_dir / "SPEC_COVERAGE.md", _render_template("SPEC_COVERAGE.md.tmpl"))
 
     if fresh_repo:
         install_test_hook(target_dir)
@@ -248,6 +256,10 @@ def _render_agents_template(instructions: str, hardware_info: str) -> str:
 
 def _render_progress_template() -> str:
     return (_TEMPLATES_DIR / "PROGRESS.md.tmpl").read_text(encoding="utf-8")
+
+
+def _render_template(filename: str) -> str:
+    return (_TEMPLATES_DIR / filename).read_text(encoding="utf-8")
 
 
 def _parse_iterations(lines: list[str]) -> list[str]:

@@ -5,8 +5,8 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from src.utils.task_parser import extract_test_command
 from src.utils.test_results import (
-    _extract_test_command_from_md,
     parse_junit,
     resolve_test_command,
     run_test_gate,
@@ -134,7 +134,7 @@ def test_resolve_test_command_ignores_other_sections(tmp_path: Path, monkeypatch
 
 
 def test_extract_test_command_handles_missing_section():
-    assert _extract_test_command_from_md("# Objectif\nrien\n") == ""
+    assert extract_test_command("# Objectif\nrien\n") == ""
 
 
 # --- run_test_gate --------------------------------------------------------
