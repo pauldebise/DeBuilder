@@ -14,11 +14,12 @@
 extract_test_cmd() {
     awk '
         tolower($0) ~ /^#+ *commande de test/ { sec = 1; next }
-        sec && /^```/ { if (inblock) { print buf; exit } inblock = 1; buf = ""; next }
+        sec && /^```/ { if (inblock) { print buf; done = 1; exit } inblock = 1; buf = ""; next }
+        sec && !inblock && /^#/ { done = 1; exit }
         sec && inblock { buf = buf $0 "\n"; next }
         sec && /^[ \t]*$/ { next }
-        sec && !inblock { print; exit }
-        END { if (sec && inblock) print buf }
+        sec && !inblock { print; done = 1; exit }
+        END { if (sec && inblock && !done) print buf }
     ' "$1" 2>/dev/null
 }
 
