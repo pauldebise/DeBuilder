@@ -26,6 +26,7 @@ from src.core.state import (
 from src.core.git import head_commit, stage_and_commit_all, status_files, tag_iteration
 from src.core.iterations import append_entry
 from src.core.secrets import sanitize_text
+from src.utils.test_results import resolve_test_command, run_test_gate
 from src.utils.text import strip_ansi
 
 # Taille max de OPENCODE_LOG.txt avant troncature : un job sans
@@ -126,6 +127,7 @@ class IterationResult:
     changed_files: int = 0
     no_op: bool = False
     tests_passed: bool | None = None
+    tests_summary: dict | None = None
     tags: list[str] | None = None
     continue_loop: bool = True
 
@@ -201,6 +203,12 @@ def run_iteration(
         _record_iteration_exception(target_dir, exc)
         result.exit_code = 1
         result.failure_type = "exception"
+
+    # Gate de tests deterministe : uniquement si la session s'est
+    # terminee proprement (une session morte laisse le repo dans un
+    # etat imprevisible, y lancer les tests serait un faux signal).
+    if result.failure_type == "":
+        _run_test_gate(target_dir, result)
 
     # Capture AVANT le commit de fin d'iteration : le diff de
     # l'iteration (base de la detection de no-op, phase 6) doit
@@ -279,24 +287,76 @@ def _is_no_op(changed_files: list[str]) -> bool:
     )
 
 
+def _run_test_gate(target_dir: Path, result: IterationResult) -> None:
+    """Execute la gate de tests deterministe (cahier des charges §5.3).
+
+    La boucle relance elle-meme la commande de test resolue (TASK.md,
+    AGENTS.md ou DEBUILDER_TEST_CMD) : le « tests passent » declare par
+    l'agent n'est jamais le seul signal. En cas d'echec, l'iteration
+    n'est pas soldee : une entree « ECHEC (tests) » est consignee dans
+    PROGRESS.md et le motif est journalise.
+
+    Args:
+        target_dir: Repertoire du projet cible.
+        result: Resultat d'iteration en cours de remplissage.
+    """
+    test_cmd = resolve_test_command(target_dir)
+    if not test_cmd:
+        _log(
+            "[agent] Gate de tests ignoree : aucune commande de test resolue "
+            "(section 'Commande de test' de TASK.md/AGENTS.md, ou DEBUILDER_TEST_CMD)."
+        )
+        result.tests_passed = None
+        return
+
+    _log(f"[agent] Gate de tests : {test_cmd}")
+    try:
+        gate = run_test_gate(target_dir, test_cmd)
+    except Exception as exc:
+        _log(f"[agent] ATTENTION: gate de tests inexecutable : {exc}")
+        result.tests_passed = None
+        return
+
+    result.tests_passed = gate.passed
+    result.tests_summary = gate.to_dict()
+
+    if gate.passed:
+        label = f"{gate.tests} tests" if gate.tests is not None else "OK"
+        _log(f"[agent] Gate de tests : OK ({label})")
+        return
+
+    detail = sanitize_text(gate.detail)[:500]
+    _log(f"[agent] Gate de tests : ECHEC — {detail}")
+    result.failure_type = "tests"
+    update_progress(
+        target_dir,
+        f"- **Action realisee** : Iteration + gate de tests\n"
+        f"- **Resultat** : ECHEC (tests)\n"
+        f"- **Problemes rencontres** : {detail}\n"
+        f"- **Solutions envisagees** : Corriger l'etat casse du depot "
+        f"avant de poursuivre ; la suite de tests doit repasser au vert.\n",
+    )
+
+
 def _journal_iteration(
     target_dir: Path,
     iteration_number: int,
     result: IterationResult,
 ) -> None:
+    entry = {
+        "iteration": iteration_number,
+        "exit_code": result.exit_code,
+        "failure_type": result.failure_type,
+        "duration_seconds": result.duration_seconds,
+        "changed_files": result.changed_files,
+        "no_op": result.no_op,
+        "tags": result.tags,
+    }
+    if result.tests_passed is not None:
+        entry["tests_passed"] = result.tests_passed
+        entry["tests"] = result.tests_summary
     try:
-        append_entry(
-            target_dir,
-            {
-                "iteration": iteration_number,
-                "exit_code": result.exit_code,
-                "failure_type": result.failure_type,
-                "duration_seconds": result.duration_seconds,
-                "changed_files": result.changed_files,
-                "no_op": result.no_op,
-                "tags": result.tags,
-            },
-        )
+        append_entry(target_dir, entry)
     except Exception as exc:
         _log(f"[agent] ATTENTION: echec d'ecriture du journal d'iterations : {exc}")
 

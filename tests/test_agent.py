@@ -303,6 +303,14 @@ def _init_git_repo(repo_dir: Path) -> None:
     _git(repo_dir, "config", "user.name", "Test")
 
 
+def _write_agents_with_test_cmd(target_dir: Path, cmd: str) -> None:
+    write_state(
+        target_dir,
+        "AGENTS.md",
+        "# Objectif\n\n## Commande de Test\n\n```\n" + cmd + "\n```\n",
+    )
+
+
 def test_run_iteration_tags_after_effective_commit(tmp_path, monkeypatch):
     import src.loop.agent as agent_mod
     from src.core.git import list_iteration_tags
@@ -339,6 +347,91 @@ def test_run_iteration_no_tag_when_no_commit(tmp_path, monkeypatch):
 
     assert result.tags == []
     assert list_iteration_tags(target_dir) == ["debuilder/iter-0001"]
+
+
+def test_run_iteration_gate_failing_tests(tmp_path, monkeypatch):
+    import sys
+
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+    _write_agents_with_test_cmd(target_dir, f"{sys.executable} -m pytest -q")
+    (target_dir / "test_sample.py").write_text("def test_ko():\n    assert False\n")
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_run_opencode)
+
+    result = run_iteration(target_dir, iteration_number=3)
+
+    assert result.tests_passed is False
+    assert result.failure_type == "tests"
+    progress = read_state(target_dir, "PROGRESS.md")
+    assert "ECHEC (tests)" in progress
+    entries = read_entries(target_dir)
+    assert entries[0]["tests_passed"] is False
+    assert entries[0]["failure_type"] == "tests"
+    assert entries[0]["tests"]["failures"] == 1
+
+
+def test_run_iteration_gate_passing_tests(tmp_path, monkeypatch):
+    import sys
+
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+    _write_agents_with_test_cmd(target_dir, f"{sys.executable} -m pytest -q")
+    (target_dir / "test_sample.py").write_text("def test_ok():\n    assert True\n")
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_run_opencode)
+
+    result = run_iteration(target_dir, iteration_number=4)
+
+    assert result.tests_passed is True
+    assert result.failure_type == ""
+    assert "ECHEC (tests)" not in read_state(target_dir, "PROGRESS.md")
+    assert read_entries(target_dir)[0]["tests_passed"] is True
+
+
+def test_run_iteration_gate_ignored_without_command(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_run_opencode)
+    monkeypatch.delenv("DEBUILDER_TEST_CMD", raising=False)
+
+    result = run_iteration(target_dir, iteration_number=1)
+
+    assert result.tests_passed is None
+    assert "tests_passed" not in read_entries(target_dir)[0]
+
+
+def test_run_iteration_gate_skipped_on_session_failure(tmp_path, monkeypatch):
+    import sys
+
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+    _write_agents_with_test_cmd(target_dir, f"{sys.executable} -m pytest -q")
+
+    def _mock_timeout(target_dir, prompt):
+        return subprocess.CompletedProcess(
+            args=["opencode"], returncode=-1, stdout="", stderr="Timeout watchdog"
+        )
+
+    monkeypatch.setattr(agent_mod, "_run_opencode", _mock_timeout)
+
+    result = run_iteration(target_dir, iteration_number=5)
+
+    assert result.failure_type == "timeout"
+    assert result.tests_passed is None
 
 
 def test_rotate_log_if_large_truncates(tmp_path):
