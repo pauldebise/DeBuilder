@@ -94,7 +94,43 @@ def _implement_timeout(target_dir, prompt, model=None, read_only=False):
     )
 
 
-def _make_dual_mock(plan_fn, implement_fn):
+_FINISHED_REPORT_CLAIMED = (
+    "# Rapport de Fin de Mission\n\n"
+    "## Checklist du Cahier des Charges\n\n"
+    "- [x] item 1 realise et teste\n\n"
+    "## Validation par les Tests\n\n"
+    "python -m pytest -q : OK\n"
+)
+
+_REVIEW_ACCEPT = "```VERDICT\nACCEPTE\n```\n"
+_REVIEW_REFUSE = "```VERDICT\nREFUSE\nil manque les tests de bout en bout\n```\n"
+
+
+def _review_accept(target_dir, prompt, model=None, read_only=False):
+    return subprocess.CompletedProcess(
+        args=["opencode"], returncode=0, stdout=_REVIEW_ACCEPT, stderr=""
+    )
+
+
+def _review_refuse(target_dir, prompt, model=None, read_only=False):
+    return subprocess.CompletedProcess(
+        args=["opencode"], returncode=0, stdout=_REVIEW_REFUSE, stderr=""
+    )
+
+
+def _implement_claim_finished(target_dir, prompt, model=None, read_only=False):
+    task = read_state(target_dir, "TASK.md")
+    write_state(target_dir, "TASK.md", task.replace("- [ ]", "- [x]"))
+    update_progress(
+        target_dir, "- **Action realisee** : mission terminee\n- **Resultat** : OK\n"
+    )
+    write_state(target_dir, "FINISHED_REPORT.md", _FINISHED_REPORT_CLAIMED)
+    return subprocess.CompletedProcess(
+        args=["opencode"], returncode=0, stdout="fini", stderr=""
+    )
+
+
+def _make_session_mock(*fns):
     calls = {"count": 0, "prompts": [], "read_only": [], "models": []}
 
     def mock(target_dir, prompt, model=None, read_only=False):
@@ -102,10 +138,14 @@ def _make_dual_mock(plan_fn, implement_fn):
         calls["prompts"].append(prompt)
         calls["read_only"].append(read_only)
         calls["models"].append(model)
-        fn = plan_fn if calls["count"] == 1 else implement_fn
+        fn = fns[min(calls["count"] - 1, len(fns) - 1)]
         return fn(target_dir, prompt, model=model, read_only=read_only)
 
     return mock, calls
+
+
+def _make_dual_mock(plan_fn, implement_fn):
+    return _make_session_mock(plan_fn, implement_fn)
 
 
 def _dual_ok():
@@ -991,3 +1031,197 @@ def test_rotate_log_if_large_noop_when_small(tmp_path):
     _rotate_log_if_large(log_file, max_bytes=100)
 
     assert log_file.read_text() == "small content"
+
+
+# --- Fin de mission : revendication, review, DONE -------------------------------
+
+
+def test_claim_finished_false_on_template(tmp_path):
+    from src.loop.agent import _claim_finished
+
+    init_project_state(tmp_path, instructions="Test")
+
+    assert _claim_finished(tmp_path) is False
+
+
+def test_claim_finished_true_when_all_checked(tmp_path):
+    from src.loop.agent import _claim_finished
+
+    write_state(tmp_path, "FINISHED_REPORT.md", _FINISHED_REPORT_CLAIMED)
+
+    assert _claim_finished(tmp_path) is True
+
+
+def test_claim_finished_false_when_partial(tmp_path):
+    from src.loop.agent import _claim_finished
+
+    write_state(
+        tmp_path,
+        "FINISHED_REPORT.md",
+        "# Rapport\n\n## Checklist du Cahier des Charges\n\n- [x] a\n- [ ] b\n",
+    )
+
+    assert _claim_finished(tmp_path) is False
+
+
+def test_mission_validated_creates_done(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    mock, calls = _make_session_mock(_plan_ok, _implement_claim_finished, _review_accept)
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+
+    result = run_iteration(target_dir, iteration_number=1)
+
+    assert calls["count"] == 3
+    assert result.mission_completed is True
+    assert result.continue_loop is False
+    assert (target_dir / "DONE").exists()
+    assert read_entries(target_dir)[0]["mission_completed"] is True
+
+
+def test_review_refusal_writes_feedback_and_continues(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    mock, _ = _make_session_mock(_plan_ok, _implement_claim_finished, _review_refuse)
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+
+    result = run_iteration(target_dir, iteration_number=1)
+
+    assert result.mission_completed is False
+    assert result.continue_loop is True
+    assert not (target_dir / "DONE").exists()
+    assert result.failure_type == "review"
+    assert "tests de bout en bout" in read_state(target_dir, "REVIEW.md")
+
+
+def test_review_session_is_read_only(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    mock, calls = _make_session_mock(_plan_ok, _implement_claim_finished, _review_accept)
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+
+    run_iteration(target_dir)
+
+    assert calls["read_only"] == [True, False, True]
+
+
+def test_review_not_run_without_claim(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    mock, calls = _make_session_mock(_plan_ok, _implement_ok, _review_accept)
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+
+    run_iteration(target_dir)
+
+    assert calls["count"] == 2
+
+
+def test_review_session_failure_keeps_loop_alive(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    mock, _ = _make_session_mock(_plan_ok, _implement_claim_finished, _implement_timeout)
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+
+    result = run_iteration(target_dir, iteration_number=1)
+
+    assert result.mission_completed is False
+    assert result.continue_loop is True
+    assert not (target_dir / "DONE").exists()
+
+
+# --- Detection de no-op ---------------------------------------------------------
+
+
+def test_count_consecutive_noops(tmp_path):
+    from src.loop.agent import _count_consecutive_noops
+
+    assert _count_consecutive_noops(tmp_path) == 0
+
+    append_entry(tmp_path, {"no_op": True})
+    append_entry(tmp_path, {"no_op": True})
+    assert _count_consecutive_noops(tmp_path) == 2
+
+    append_entry(tmp_path, {"no_op": False})
+    assert _count_consecutive_noops(tmp_path) == 0
+
+
+def test_max_noops_warns_in_plan_prompt(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+    for i in range(3):
+        append_entry(target_dir, {"iteration": i + 1, "no_op": True})
+
+    mock, calls = _make_session_mock(_plan_ok, _implement_ok)
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+
+    run_iteration(target_dir, iteration_number=4)
+
+    assert "no-op consecutives" in calls["prompts"][0]
+
+
+def test_max_noops_triggers_notification_and_failure(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    monkeypatch.setenv("DEBUILDER_MAX_NOOPS", "1")
+    webhook_calls = []
+    monkeypatch.setattr(
+        agent_mod, "_notify_webhook", lambda payload: webhook_calls.append(payload)
+    )
+    monkeypatch.setattr(agent_mod, "status_files", lambda d: [])
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
+
+    mock, _ = _make_session_mock(_plan_ok, _implement_ok)
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+
+    result = run_iteration(target_dir, iteration_number=1)
+
+    assert result.no_op is True
+    assert result.failure_type == "noop"
+    assert "ECHEC (no-op)" in read_state(target_dir, "PROGRESS.md")
+    assert webhook_calls[0]["event"] == "max_noops_reached"
+
+
+# --- Caps durs -------------------------------------------------------------------
+
+
+def test_record_cap_stop_writes_progress_and_webhook(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    webhook_calls = []
+    monkeypatch.setattr(
+        agent_mod, "_notify_webhook", lambda payload: webhook_calls.append(payload)
+    )
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+
+    agent_mod.record_cap_stop(target_dir, "Cap dur atteint (5 iterations), arret.")
+
+    assert "Arret par cap dur" in read_state(target_dir, "PROGRESS.md")
+    assert webhook_calls[0]["event"] == "cap_reached"

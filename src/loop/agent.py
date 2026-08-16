@@ -18,18 +18,19 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.core.circuit_breaker import CircuitBreaker
+from src.core.circuit_breaker import CircuitBreaker, _notify_webhook
 from src.core.state import (
     clear_suggestions,
     is_done,
     read_state,
+    touch_done,
     update_progress,
     write_state,
 )
 from src.core.git import head_commit, stage_and_commit_all, status_files, tag_iteration
 from src.core.iterations import append_entry, read_entries
 from src.core.secrets import sanitize_text
-from src.utils.task_parser import all_boxes_checked, parse_task
+from src.utils.task_parser import all_boxes_checked, parse_checkboxes, parse_task
 from src.utils.test_results import resolve_test_command, run_test_gate
 from src.utils.text import read_log_tail, strip_ansi
 
@@ -142,6 +143,8 @@ _STATE_FILES = {
     "ARCHITECTURE.md",
     "SPEC_COVERAGE.md",
     "GATE_FAILURE.md",
+    "FINISHED_REPORT.md",
+    "REVIEW.md",
     "DONE",
 }
 
@@ -164,6 +167,7 @@ class IterationResult:
     tests_summary: dict | None = None
     tags: list[str] | None = None
     gate_failures: list[str] | None = None
+    mission_completed: bool = False
     continue_loop: bool = True
 
     def __bool__(self) -> bool:
@@ -221,15 +225,17 @@ def run_iteration(
 
     progress_before = read_state(target_dir, "PROGRESS.md")
     suggestions_md = read_state(target_dir, "SUGGESTIONS.md")
+    agents_md = read_state(target_dir, "AGENTS.md")
+    spec_md = read_state(target_dir, "SPEC_COVERAGE.md")
     session_failures: list[str] = []
 
     # --- Session Plan (lecture seule) -----------------------------------
     try:
         plan_prompt = _build_plan_prompt(
-            agents_md=read_state(target_dir, "AGENTS.md"),
+            agents_md=agents_md,
             progress_md=progress_before,
             plan_md=read_state(target_dir, "PLAN.md"),
-            spec_md=read_state(target_dir, "SPEC_COVERAGE.md"),
+            spec_md=spec_md,
             gate_state=_gate_state_summary(target_dir),
         )
         _log("[agent] Session Plan (lecture seule)...")
@@ -301,6 +307,40 @@ def run_iteration(
                     suggestions_md,
                     progress_before,
                 )
+
+                # --- Session Review (lecture seule) : fin de mission ---
+                # L'agent ne cree jamais DONE lui-meme : il coche la
+                # checklist de FINISHED_REPORT.md, et seule la boucle
+                # valide le rapport puis cree DONE.
+                if result.failure_type == "" and _claim_finished(target_dir):
+                    accepted, feedback, review_failure = _run_review_session(
+                        target_dir,
+                        model=model,
+                        agents_md=agents_md,
+                        spec_md=read_state(target_dir, "SPEC_COVERAGE.md"),
+                        finished_md=read_state(target_dir, "FINISHED_REPORT.md"),
+                        progress_md=read_state(target_dir, "PROGRESS.md"),
+                    )
+                    if review_failure:
+                        session_failures.append(review_failure)
+                        _log(
+                            "[agent] Session Review en echec "
+                            f"({review_failure}) : pas de validation, la boucle repart."
+                        )
+                    elif accepted:
+                        touch_done(target_dir)
+                        result.mission_completed = True
+                        _log(
+                            "[agent] Mission validee par la session Review : "
+                            "DONE cree par la boucle."
+                        )
+                    else:
+                        _write_review(target_dir, feedback)
+                        result.failure_type = "review"
+                        _log(
+                            "[agent] Session Review : rapport rejete, "
+                            "feedback dans REVIEW.md, la boucle repart."
+                        )
         except Exception as exc:
             _log(f"[agent] ERREUR inattendue pendant la session Implement : {exc}")
             _record_iteration_exception(target_dir, exc)
@@ -319,6 +359,34 @@ def run_iteration(
     changed = status_files(target_dir)
     result.changed_files = len(changed)
     result.no_op = _is_no_op(changed)
+
+    # Detection de no-op (cdc §3) : apres N iterations consecutives sans
+    # travail reel, le planner est somme de declarer la fin de mission
+    # ou de justifier la poursuite ; l'utilisateur est notifie.
+    consecutive_noops = _count_consecutive_noops(target_dir) + (
+        1 if result.no_op else 0
+    )
+    if result.no_op and consecutive_noops >= _max_noops():
+        _notify_webhook(
+            {"event": "max_noops_reached", "noops": consecutive_noops}
+        )
+        update_progress(
+            target_dir,
+            f"- **Action realisee** : Detection de no-op\n"
+            f"- **Resultat** : ECHEC (no-op)\n"
+            f"- **Problemes rencontres** : {consecutive_noops} iterations "
+            f"no-op consecutives (max {_max_noops()}) : soit la mission est "
+            f"terminee, soit le plan doit etre corrige.\n"
+            f"- **Solutions envisagees** : Coche la checklist de "
+            f"FINISHED_REPORT.md si la mission est finie, ou replanifie "
+            f"une tache concrete.\n",
+        )
+        if result.failure_type == "":
+            result.failure_type = "noop"
+        _log(
+            f"[agent] {consecutive_noops} iterations no-op consecutives : "
+            "fin de mission ou justification exigees."
+        )
 
     head_before = head_commit(target_dir)
     committed, detail = stage_and_commit_all(target_dir, f"iteration {_timestamp()}")
@@ -346,7 +414,9 @@ def run_iteration(
     return result
 
 
-_FENCED_BLOCK_RE = re.compile(r"`{3,}(TASK|PLAN)\s*\n(.*?)\n`{3,}", re.DOTALL)
+_FENCED_BLOCK_RE = re.compile(
+    r"`{3,}(TASK|PLAN|SPEC|VERDICT)\s*\n(.*?)\n`{3,}", re.DOTALL
+)
 
 
 def _extract_fenced_block(stdout: str, tag: str) -> str:
@@ -369,11 +439,11 @@ def _extract_fenced_block(stdout: str, tag: str) -> str:
 
 
 def _materialize_plan_outputs(target_dir: Path, stdout: str) -> bool:
-    """Materialise TASK.md et PLAN.md a partir de la sortie de la session Plan.
+    """Materialise TASK.md, PLAN.md et SPEC_COVERAGE.md depuis la sortie Plan.
 
     La boucle ne croit pas l'agent sur parole : elle ecrit elle-meme le
-    contrat de tache et le plan, a partir des blocs delimites de la
-    reponse.
+    contrat de tache, le plan et la couverture, a partir des blocs
+    delimites de la reponse.
 
     Args:
         target_dir: Repertoire du projet cible.
@@ -391,6 +461,10 @@ def _materialize_plan_outputs(target_dir: Path, stdout: str) -> bool:
     plan_content = _extract_fenced_block(stdout, "PLAN")
     if plan_content:
         write_state(target_dir, "PLAN.md", plan_content + "\n")
+
+    spec_content = _extract_fenced_block(stdout, "SPEC")
+    if spec_content:
+        write_state(target_dir, "SPEC_COVERAGE.md", spec_content + "\n")
     return True
 
 
@@ -532,7 +606,7 @@ def _gate_state_summary(target_dir: Path) -> str:
         target_dir: Repertoire du projet cible.
 
     Returns:
-        Resume factuel (gates, tests, arbre git) en Markdown.
+        Resume factuel (gates, tests, arbre git, no-op) en Markdown.
     """
     parts: list[str] = []
     gate_failure = read_state(target_dir, "GATE_FAILURE.md").strip()
@@ -541,6 +615,13 @@ def _gate_state_summary(target_dir: Path) -> str:
     else:
         parts.append("Gates de l'iteration precedente : OK.")
 
+    review_feedback = read_state(target_dir, "REVIEW.md").strip()
+    if review_feedback:
+        parts.append(
+            "Le rapport de fin de mission a ete REJETE par la session "
+            "Review. Feedback :\n\n" + review_feedback
+        )
+
     entries = read_entries(target_dir, limit=1)
     if entries:
         tests_passed = entries[-1].get("tests_passed")
@@ -548,6 +629,17 @@ def _gate_state_summary(target_dir: Path) -> str:
             tests_passed, "inconnu"
         )
         parts.append(f"Tests de la derniere iteration : {label}.")
+
+    noops = _count_consecutive_noops(target_dir)
+    if noops >= _max_noops():
+        parts.append(
+            f"ATTENTION : {noops} iterations no-op consecutives (max "
+            f"{_max_noops()}) : declare la fin de mission (checklist de "
+            f"FINISHED_REPORT.md complete) ou justifie explicitement la "
+            f"poursuite dans le plan."
+        )
+    elif noops:
+        parts.append(f"Iterations no-op consecutives : {noops}.")
 
     dirty = status_files(target_dir)
     if dirty:
@@ -559,6 +651,165 @@ def _gate_state_summary(target_dir: Path) -> str:
     else:
         parts.append("Arbre git propre.")
     return "\n".join(parts)
+
+
+def _max_noops() -> int:
+    """Nombre de no-op consecutifs avant obligation de conclure."""
+    return int(os.environ.get("DEBUILDER_MAX_NOOPS", "3"))
+
+
+def _count_consecutive_noops(target_dir: Path) -> int:
+    """Compte les iterations no-op consecutives (les plus recentes).
+
+    Args:
+        target_dir: Repertoire du projet cible.
+
+    Returns:
+        Nombre d'entrees finales du journal marquees no-op.
+    """
+    entries = read_entries(target_dir)
+    count = 0
+    for entry in reversed(entries):
+        if entry.get("no_op"):
+            count += 1
+        else:
+            break
+    return count
+
+
+def _claim_finished(target_dir: Path) -> bool:
+    """True si l'agent revendique la fin de mission.
+
+    La revendication est un fait deterministe : la checklist de
+    FINISHED_REPORT.md existe, contient au moins une case, et toutes
+    les cases sont cochees. Un rapport a l'etat du template (aucune
+    case cochee) n'est pas une revendication.
+    """
+    finished_md = read_state(target_dir, "FINISHED_REPORT.md")
+    if not finished_md.strip():
+        return False
+    boxes = parse_checkboxes(finished_md)
+    return bool(boxes) and all(item.checked for item in boxes)
+
+
+def _build_review_prompt(
+    agents_md: str,
+    spec_md: str,
+    finished_md: str,
+    progress_md: str,
+) -> str:
+    """Construit le prompt de la session Review (lecture seule).
+
+    La session Review ne cree jamais DONE : elle rend un verdict que la
+    boucle applique elle-meme.
+    """
+    parts = []
+
+    parts.append("## Cahier des Charges\n\n" + (agents_md or "(absent)"))
+
+    if spec_md.strip():
+        parts.append(
+            "## Couverture du Cahier des Charges (SPEC_COVERAGE.md)\n\n"
+            "La fin de mission exige une couverture 100 % (chaque item "
+            "du cahier des charges mappe sur une implementation et un "
+            "test) ET des tests verts.\n\n" + spec_md
+        )
+
+    parts.append(
+        "## Rapport de Fin de Mission (FINISHED_REPORT.md)\n\n"
+        + (finished_md or "(absent)")
+    )
+
+    if progress_md.strip():
+        parts.append("## Progression Recente\n\n" + progress_md)
+
+    parts.append(
+        "## Instructions\n\n"
+        "1. Compare le rapport de fin de mission au cahier des charges "
+        "et a la couverture SPEC_COVERAGE : chaque item est-il "
+        "reellement realise, valide par un test, et la suite de tests "
+        "est-elle verte ?\n"
+        "2. Ne te fie pas aux seules declarations du rapport : "
+        "controle leur coherence avec SPEC_COVERAGE.md et la "
+        "progression.\n"
+        "3. Termine ta reponse par EXACTEMENT un bloc de code marque "
+        "VERDICT dont la premiere ligne est `ACCEPTE` (mission "
+        "validee) ou `REFUSE` (avec les raisons detaillees sur les "
+        "lignes suivantes, et ce qu'il reste a faire)."
+    )
+
+    return "\n\n".join(parts)
+
+
+def _run_review_session(
+    target_dir: Path,
+    model: str,
+    agents_md: str,
+    spec_md: str,
+    finished_md: str,
+    progress_md: str,
+) -> tuple[bool, str, str]:
+    """Lance la session Review et parse son verdict.
+
+    Returns:
+        Tuple (accepte, feedback, echec_session) : ``accepte`` n'est
+        True que si la session a proprement rendu un verdict ACCEPTE ;
+        ``echec_session`` est la typologie de l'echec ("" si la
+        session s'est terminee proprement).
+    """
+    prompt = _build_review_prompt(
+        agents_md=agents_md,
+        spec_md=spec_md,
+        finished_md=finished_md,
+        progress_md=progress_md,
+    )
+    _log("[agent] Session Review (lecture seule)...")
+    completed = _run_opencode(target_dir, prompt, model=model, read_only=True)
+    failure = _classify_failure(completed)
+    _log(f"[agent] Session Review terminee (code={completed.returncode})")
+    if failure:
+        return False, "", failure
+
+    verdict = _extract_fenced_block(completed.stdout, "VERDICT")
+    accepted = verdict.strip().upper().startswith("ACCEPTE")
+    if accepted:
+        return True, "", ""
+    return False, verdict.strip(), ""
+
+
+def _write_review(target_dir: Path, feedback: str) -> None:
+    """Consigne le feedback de rejet dans REVIEW.md."""
+    template = (
+        Path(__file__).resolve().parent.parent.parent
+        / "templates"
+        / "REVIEW.md.tmpl"
+    ).read_text(encoding="utf-8")
+    write_state(
+        target_dir,
+        "REVIEW.md",
+        template.replace("{{ feedback }}", feedback or "(aucun detail)"),
+    )
+
+
+def record_cap_stop(target_dir: Path, reason: str) -> None:
+    """Notifie un arret par cap dur (iterations ou budget de temps).
+
+    Appele par agent_loop.sh : consigne l'arret dans PROGRESS.md
+    (visible au tableau de bord) et pousse un webhook optionnel.
+
+    Args:
+        target_dir: Repertoire du projet cible.
+        reason: Motif de l'arret (deja en clair, sans secrets).
+    """
+    update_progress(
+        target_dir,
+        f"- **Action realisee** : Arret par cap dur\n"
+        f"- **Resultat** : {sanitize_text(reason)}\n"
+        f"- **Problemes rencontres** : Aucun.\n"
+        f"- **Solutions envisagees** : Relancer la boucle avec des caps "
+        f"plus larges, ou valider la fin de mission.\n",
+    )
+    _notify_webhook({"event": "cap_reached", "reason": sanitize_text(reason)})
 
 
 def _record_session_failure(
@@ -734,6 +985,7 @@ def _journal_iteration(
         entry["tests"] = result.tests_summary
     if result.gate_failures:
         entry["gate_failures"] = result.gate_failures
+    entry["mission_completed"] = result.mission_completed
     try:
         append_entry(target_dir, entry)
     except Exception as exc:
@@ -809,16 +1061,19 @@ def _build_plan_prompt(
         "phrases, criteres d'acceptation mesurables en cases a cocher, "
         "la commande de test exacte (UNE SEULE LIGNE, sans bloc de code), "
         "et les sous-taches atomiques en cases a cocher.\n"
-        "5. Mets a jour le plan : deplace la tache choisie, trie le "
-        "backlog par priorite, complete la couverture du cahier des "
-        "charges dans le bloc PLAN si des items ont ete realises.\n"
-        "6. Termine ta reponse par EXACTEMENT deux blocs de code, dans "
+        "5. Mets a jour le plan (backlog trie par priorite, tache "
+        "choisie deplacee) et la couverture SPEC_COVERAGE (mapping cahier "
+        "des charges -> implementation + test).\n"
+        "6. Termine ta reponse par EXACTEMENT trois blocs de code, dans "
         "cet ordre :\n"
         "   - un bloc marque TASK contenant le contenu complet de TASK.md ;\n"
         "   - un bloc marque PLAN contenant le contenu complet et a jour "
-        "de PLAN.md (avec la table SPEC_COVERAGE incluse dans ce bloc).\n"
+        "de PLAN.md ;\n"
+        "   - un bloc marque SPEC contenant le contenu complet et a jour "
+        "de SPEC_COVERAGE.md.\n"
         "   Exemple : ```TASK puis le contenu, puis ```, puis ```PLAN puis "
-        "le contenu, puis ```. Ne rien mettre apres le bloc PLAN."
+        "le contenu, puis ```, puis ```SPEC puis le contenu, puis ```. Ne "
+        "rien mettre apres le bloc SPEC."
     )
 
     return "\n\n".join(parts)
@@ -911,22 +1166,29 @@ def _build_implement_prompt(
         "solutions, et la prochaine sous-tache prevue. Mets a jour "
         "BENCHMARKS.md si de nouvelles metriques ont ete collectees, et "
         "ARCHITECTURE.md si une decision structurante a ete prise.\n"
-        "6. Si une suggestion utilisateur est presente, justifie ta "
+        "6. Fin de mission : si tu estimes la Definition of Done "
+        "atteinte (tous les items du cahier des charges realises et "
+        "valides par tests), coche TOUTES les cases de la checklist de "
+        "FINISHED_REPORT.md et complete sa section « Validation par les "
+        "Tests » avec les commandes executees et leurs resultats. Ne "
+        "cree JAMAIS le fichier DONE : seule la boucle le fait, apres "
+        "validation par une session de review.\n"
+        "7. Si une suggestion utilisateur est presente, justifie ta "
         "decision (acceptee/rejetee/reportee) dans PROGRESS.md.\n"
-        "7. Ne JAMAIS inclure de cles API ou secrets dans les logs/commits.\n"
-        "8. Si une ressource te manque, trouve une solution de "
+        "8. Ne JAMAIS inclure de cles API ou secrets dans les logs/commits.\n"
+        "9. Si une ressource te manque, trouve une solution de "
         "contournement et ne bloque jamais. Si tu signales le besoin "
         "dans RESOURCES_NEEDED.md, justifie-y explicitement pourquoi "
         "cette ressource serait un plus et quelle solution palliative tu "
         "as deja mise en place en attendant.\n"
-        "9. Pour toute commande longue (entrainement ML, build "
+        "10. Pour toute commande longue (entrainement ML, build "
         "volumineux, telechargement de dataset...) : lance-la en "
         "arriere-plan (ex: `nohup ... > train.log 2>&1 &`) et redonne "
         "la main immediatement. Ne bloque JAMAIS cet appel en attendant "
         "sa fin : cette iteration a un delai maximum, et le processus "
         "serait tue avant la fin de l'entrainement. Verifie et rapporte "
         "sa progression aux iterations suivantes.\n"
-        "10. Tu as un acces internet via les outils `websearch` "
+        "11. Tu as un acces internet via les outils `websearch` "
         "(rechercher) et `webfetch` (lire une URL). Utilise-les des que "
         "ta decision depend d'une information externe susceptible "
         "d'avoir change : documentation ou signature d'API d'une "
@@ -976,6 +1238,17 @@ _RECOVERY_MESSAGES = {
         "Les gates de l'iteration precedente ont echoue (voir "
         "GATE_FAILURE.md) : la tache n'est pas soldee. Termine ou "
         "repare l'etat avant de considerer que le travail est fait."
+    ),
+    "review": (
+        "La session Review a rejete le rapport de fin de mission "
+        "(voir REVIEW.md) : la mission n'est pas terminee. Corrige les "
+        "manques signales avant de revendiquer a nouveau la fin."
+    ),
+    "noop": (
+        "Les iterations precedentes n'ont produit aucun travail reel "
+        "(no-op repetes) : soit la mission est terminee (coche la "
+        "checklist de FINISHED_REPORT.md), soit le plan doit etre "
+        "corrige pour reprendre un travail utile."
     ),
     "tests": (
         "La gate de tests de l'iteration precedente a echoue : le "

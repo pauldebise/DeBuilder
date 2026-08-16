@@ -37,6 +37,23 @@ export DEBUILDER_TARGET_DIR="${TARGET_DIR}"
 export DEBUILDER_MODEL="${DEBUILDER_MODEL:-}"
 
 MAX_ITERATIONS="${DEBUILDER_MAX_ITERATIONS:-0}"
+MAX_HOURS="${DEBUILDER_MAX_HOURS:-0}"
+START_EPOCH="$(date +%s)"
+
+# Notification d'arret par cap dur : PROGRESS.md + webhook optionnel
+# (via record_cap_stop dans agent.py), puis la sortie propre
+# (commit d'urgence) est assuree par le trap EXIT.
+_cap_stop() {
+    local reason="$1"
+    echo "[agent_loop] ${reason}" >&2
+    ${PYTHON_BIN} -c "
+import sys
+sys.path.insert(0, '${DEBUILDER_DIR}')
+from pathlib import Path
+from src.loop.agent import record_cap_stop
+record_cap_stop(Path('${TARGET_DIR}'), '${reason}')
+" || true
+}
 
 # Sortie propre : commit d'urgence de l'etat. Si la boucle est tuee
 # (SIGTERM du pod, cap dur, DONE), la derniere mise a jour de
@@ -57,8 +74,17 @@ SLEEP=2
 ITERATION=0
 while true; do
     if [ "${MAX_ITERATIONS}" -gt 0 ] && [ "${ITERATION}" -ge "${MAX_ITERATIONS}" ]; then
-        echo "[agent_loop] Cap dur atteint (${MAX_ITERATIONS} iterations), arret." >&2
+        _cap_stop "Cap dur atteint (${MAX_ITERATIONS} iterations), arret."
         break
+    fi
+
+    if [ "${MAX_HOURS}" -gt 0 ]; then
+        NOW_EPOCH="$(date +%s)"
+        ELAPSED=$(( (NOW_EPOCH - START_EPOCH) / 3600 ))
+        if [ "${ELAPSED}" -ge "${MAX_HOURS}" ]; then
+            _cap_stop "Budget de temps epuise (${MAX_HOURS}h), arret."
+            break
+        fi
     fi
 
     ITERATION=$((ITERATION + 1))
