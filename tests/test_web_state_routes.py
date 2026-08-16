@@ -165,6 +165,58 @@ def test_dashboard_exposes_circuit_breaker_field(tmp_path: Path):
     assert resp.json()["circuit_breaker"]["tripped"] is False
 
 
+# --- Journal d'iterations (route /api/iterations, cdc §5.2) ------------------
+
+
+def test_get_iterations_empty_when_no_journal(tmp_path: Path):
+    resp = client.get("/api/iterations", params={"target_dir": str(tmp_path)})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"entries": [], "total": 0}
+
+
+def test_get_iterations_returns_entries_bounded_by_limit(tmp_path: Path):
+    from src.core.iterations import append_entry
+
+    for i in range(5):
+        append_entry(tmp_path, {"iteration": i + 1, "exit_code": 0})
+
+    resp = client.get(
+        "/api/iterations", params={"target_dir": str(tmp_path), "limit": 2}
+    )
+
+    data = resp.json()
+    assert data["total"] == 5
+    assert [e["iteration"] for e in data["entries"]] == [4, 5]
+
+
+def test_get_iterations_skips_corrupt_lines(tmp_path: Path):
+    from src.core.iterations import append_entry, journal_path
+
+    append_entry(tmp_path, {"iteration": 1, "exit_code": 0})
+    with journal_path(tmp_path).open("a", encoding="utf-8") as fh:
+        fh.write("{ligne corrompue\n")
+    append_entry(tmp_path, {"iteration": 2, "exit_code": 0})
+
+    resp = client.get("/api/iterations", params={"target_dir": str(tmp_path)})
+
+    data = resp.json()
+    assert data["total"] == 2
+    assert [e["iteration"] for e in data["entries"]] == [1, 2]
+
+
+def test_get_iterations_rejects_out_of_range_limit(tmp_path: Path):
+    resp = client.get(
+        "/api/iterations", params={"target_dir": str(tmp_path), "limit": 5000}
+    )
+    assert resp.status_code == 422
+
+
+def test_get_iterations_requires_target_dir():
+    resp = client.get("/api/iterations", params={"target_dir": ""})
+    assert resp.status_code == 400
+
+
 def test_dashboard_alerts_when_breaker_tripped(tmp_path: Path, monkeypatch):
     from src.core.circuit_breaker import CircuitBreaker
 

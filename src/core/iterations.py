@@ -4,9 +4,12 @@ Une ligne JSON par iteration, append-only, protegee par le mecanisme
 de verrouillage (filelock) : le journal est ecrit par la boucle et lu
 par le tableau de bord, jamais reecrit.
 
-Squelette minimal (phase 0 du plan pipeline) : horodatage, numero
-d'iteration, code de sortie, type d'echec, duree, diff, no-op. Les
-champs modele/session/tests seront enrichis en phase 8.
+Ligne complete (cdc §5.2) : horodatage, numero d'iteration, code de
+sortie, type d'echec, duree, taille du diff, flag no-op, tags poses,
+modele, sessions (plan/implement/review avec duree et code de sortie
+propres) et resultats de tests parses. ``REQUIRED_ENTRY_FIELDS`` est
+la reference de conformite d'une ligne, verifiee par les tests et le
+tableau de bord.
 
 Le fichier vit dans le repertoire du projet cible (comme
 OPENCODE_LOG.txt) et est exclu du suivi Git via
@@ -20,6 +23,23 @@ from pathlib import Path
 from src.core.filelock import file_lock
 
 JOURNAL_FILENAME = "ITERATIONS.jsonl"
+
+# Champs obligatoires d'une ligne conforme du journal : la boucle les
+# ecrit tous a chaque iteration (cf. src/loop/agent.py::_journal_iteration).
+REQUIRED_ENTRY_FIELDS = (
+    "timestamp",
+    "iteration",
+    "exit_code",
+    "failure_type",
+    "duration_seconds",
+    "changed_files",
+    "diff",
+    "no_op",
+    "tags",
+    "model",
+    "sessions",
+    "mission_completed",
+)
 
 
 def journal_path(target_dir: Path) -> Path:
@@ -74,3 +94,19 @@ def read_entries(target_dir: Path, limit: int | None = None) -> list[dict]:
     if limit is not None:
         return entries[-limit:]
     return entries
+
+
+def missing_entry_fields(entry: dict) -> list[str]:
+    """Champs obligatoires absents d'une ligne du journal.
+
+    Reference de conformite partagee entre les tests et le tableau de
+    bord : une ligne incomplete doit etre signalee, pas ignoree
+    silencieusement.
+
+    Args:
+        entry: Dictionnaire d'une ligne du journal.
+
+    Returns:
+        Liste des champs manquants (vide si la ligne est conforme).
+    """
+    return [field for field in REQUIRED_ENTRY_FIELDS if field not in entry]

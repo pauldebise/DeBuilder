@@ -31,6 +31,7 @@ from src.core.state import (
     write_state,
 )
 from src.core.git import (
+    diff_size,
     head_commit,
     recent_changes,
     stage_and_commit_all,
@@ -172,6 +173,9 @@ class IterationResult:
     gate_failures: list[str] | None = None
     mission_completed: bool = False
     continue_loop: bool = True
+    model: str = ""
+    sessions: list[dict] | None = None
+    diff_size: dict | None = None
 
     def __bool__(self) -> bool:
         """Compat : ``bool(result)`` vaut l'ancien booleen de boucle."""
@@ -182,6 +186,10 @@ class IterationResult:
             self.tags = []
         if self.gate_failures is None:
             self.gate_failures = []
+        if self.sessions is None:
+            self.sessions = []
+        if self.diff_size is None:
+            self.diff_size = {"added": 0, "removed": 0}
 
 
 def run_iteration(
@@ -222,9 +230,15 @@ def run_iteration(
         result.continue_loop = False
         return result
 
+    # Reference de depart pour la taille du diff de l'iteration (cdc
+    # §5.2) : capturee AVANT toute session, pour couvrir aussi les
+    # commits poses par l'agent lui-meme pendant l'iteration.
+    head_at_start = head_commit(target_dir)
+
     breaker = CircuitBreaker()
     _maybe_pause(breaker, target_dir)
     model = _select_model(breaker)
+    result.model = model
 
     # Reparation deterministe de la memoire persistante (cdc §4.1) :
     # un PROGRESS.md malforme (separateur absent, section tronquee)
@@ -249,8 +263,17 @@ def run_iteration(
             gate_state=_gate_state_summary(target_dir),
         )
         _log("[agent] Session Plan (lecture seule)...")
+        plan_started = time.monotonic()
         plan_completed = _run_opencode(
             target_dir, plan_prompt, model=model, read_only=True
+        )
+        result.sessions.append(
+            _session_record(
+                "plan",
+                model,
+                plan_completed.returncode,
+                time.monotonic() - plan_started,
+            )
         )
         _log(f"[agent] Session Plan terminee (code={plan_completed.returncode})")
 
@@ -295,7 +318,16 @@ def run_iteration(
                 recovery_md=_recovery_section(target_dir),
             )
             _log("[agent] Session Implement...")
+            implement_started = time.monotonic()
             completed = _run_opencode(target_dir, implement_prompt, model=model)
+            result.sessions.append(
+                _session_record(
+                    "implement",
+                    model,
+                    completed.returncode,
+                    time.monotonic() - implement_started,
+                )
+            )
             _log(f"[agent] Session Implement terminee (code={completed.returncode})")
 
             result.exit_code = completed.returncode
@@ -330,6 +362,7 @@ def run_iteration(
                         spec_md=read_state(target_dir, "SPEC_COVERAGE.md"),
                         finished_md=read_state(target_dir, "FINISHED_REPORT.md"),
                         progress_md=read_state(target_dir, "PROGRESS.md"),
+                        sessions=result.sessions,
                     )
                     if review_failure:
                         session_failures.append(review_failure)
@@ -420,7 +453,30 @@ def run_iteration(
     result.duration_seconds = round(time.monotonic() - started, 3)
     result.continue_loop = not is_done(target_dir)
 
+    # Taille du diff de l'iteration (cdc §5.2) : mesuree APRES le
+    # commit de fin, quand tout le travail (commits de l'agent inclus)
+    # est visible depuis la reference de depart.
+    result.diff_size = diff_size(target_dir, head_at_start)
+
     _journal_iteration(target_dir, iteration_number, result)
+
+    # Alerte webhook sur echecs repetes (cdc §5.2, reutilise le canal de
+    # la phase 3) : notifie au franchissement du seuil, sans spam a
+    # chaque iteration suivante (le circuit breaker gere deja la pause
+    # pour les echecs API).
+    consecutive_failures = _count_consecutive_failures(target_dir)
+    if consecutive_failures == _max_consecutive_failures():
+        _notify_webhook(
+            {
+                "event": "repeated_failures",
+                "failures": consecutive_failures,
+                "iteration": iteration_number,
+            }
+        )
+        _log(
+            f"[agent] {consecutive_failures} echecs consecutifs : "
+            "notification webhook envoyee."
+        )
     return result
 
 
@@ -677,6 +733,30 @@ def _max_noops() -> int:
     return int(os.environ.get("DEBUILDER_MAX_NOOPS", "3"))
 
 
+def _max_consecutive_failures() -> int:
+    """Nombre d'echecs consecutifs avant alerte webhook (cdc §5.2)."""
+    return int(os.environ.get("DEBUILDER_MAX_CONSECUTIVE_FAILURES", "3"))
+
+
+def _count_consecutive_failures(target_dir: Path) -> int:
+    """Compte les iterations en echec consecutives (les plus recentes).
+
+    Args:
+        target_dir: Repertoire du projet cible.
+
+    Returns:
+        Nombre d'entrees finales du journal avec un type d'echec.
+    """
+    entries = read_entries(target_dir)
+    count = 0
+    for entry in reversed(entries):
+        if entry.get("failure_type"):
+            count += 1
+        else:
+            break
+    return count
+
+
 def _count_consecutive_noops(target_dir: Path) -> int:
     """Compte les iterations no-op consecutives (les plus recentes).
 
@@ -767,8 +847,19 @@ def _run_review_session(
     spec_md: str,
     finished_md: str,
     progress_md: str,
+    sessions: list[dict] | None = None,
 ) -> tuple[bool, str, str]:
     """Lance la session Review et parse son verdict.
+
+    Args:
+        target_dir: Repertoire du projet cible.
+        model: Modele OpenCode a utiliser.
+        agents_md: Contenu du cahier des charges.
+        spec_md: Contenu de SPEC_COVERAGE.md.
+        finished_md: Contenu de FINISHED_REPORT.md.
+        progress_md: Contenu de PROGRESS.md.
+        sessions: Liste des sessions de l'iteration (journal cdc §5.2) ;
+            la session Review y est ajoutee avec sa duree et son code.
 
     Returns:
         Tuple (accepte, feedback, echec_session) : ``accepte`` n'est
@@ -783,7 +874,17 @@ def _run_review_session(
         progress_md=progress_md,
     )
     _log("[agent] Session Review (lecture seule)...")
+    review_started = time.monotonic()
     completed = _run_opencode(target_dir, prompt, model=model, read_only=True)
+    if sessions is not None:
+        sessions.append(
+            _session_record(
+                "review",
+                model,
+                completed.returncode,
+                time.monotonic() - review_started,
+            )
+        )
     failure = _classify_failure(completed)
     _log(f"[agent] Session Review terminee (code={completed.returncode})")
     if failure:
@@ -1022,6 +1123,31 @@ def _run_test_gate(target_dir: Path, result: IterationResult) -> None:
     )
 
 
+def _session_record(
+    session_type: str,
+    model: str,
+    exit_code: int,
+    duration_seconds: float,
+) -> dict:
+    """Ligne de session pour le journal d'iterations (cdc §5.2).
+
+    Args:
+        session_type: ``plan``, ``implement`` ou ``review``.
+        model: Modele OpenCode utilise (vide = defaut).
+        exit_code: Code de sortie de la session.
+        duration_seconds: Duree de la session.
+
+    Returns:
+        Dictionnaire pret a etre journalise dans ``sessions``.
+    """
+    return {
+        "type": session_type,
+        "model": model,
+        "exit_code": exit_code,
+        "duration_seconds": round(duration_seconds, 3),
+    }
+
+
 def _journal_iteration(
     target_dir: Path,
     iteration_number: int,
@@ -1033,8 +1159,11 @@ def _journal_iteration(
         "failure_type": result.failure_type,
         "duration_seconds": result.duration_seconds,
         "changed_files": result.changed_files,
+        "diff": result.diff_size,
         "no_op": result.no_op,
         "tags": result.tags,
+        "model": result.model,
+        "sessions": result.sessions,
     }
     if result.tests_passed is not None:
         entry["tests_passed"] = result.tests_passed

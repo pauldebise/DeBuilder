@@ -83,6 +83,7 @@
     <button class="tab-btn active" data-tab="dashboard">Tableau de bord</button>
     <button class="tab-btn" data-tab="progress">Progression</button>
     <button class="tab-btn" data-tab="benchmarks">Benchmarks</button>
+    <button class="tab-btn" data-tab="iterations">Itérations</button>
   </nav>
 
   <section id="tab-dashboard" class="tab-panel">
@@ -163,6 +164,20 @@
 
   <section id="tab-benchmarks" class="tab-panel hidden">
     <div id="benchmarks-full" class="markdown-body card"></div>
+  </section>
+
+  <section id="tab-iterations" class="tab-panel hidden">
+    <div class="card">
+      <h2>Journal des itérations (ITERATIONS.jsonl)</h2>
+      <div id="iterations-summary" class="iterations-summary small"></div>
+      <canvas id="iterations-chart" class="iterations-chart"></canvas>
+      <div class="iterations-legend small">
+        <span class="legend-item"><span class="legend-swatch swatch-ok"></span> succès</span>
+        <span class="legend-item"><span class="legend-swatch swatch-fail"></span> échec</span>
+        <span class="legend-item"><span class="legend-swatch swatch-noop"></span> no-op</span>
+      </div>
+      <div id="iterations-anomalies" class="alert-banner alert-warning hidden markdown-body"></div>
+    </div>
   </section>
 </main>
 

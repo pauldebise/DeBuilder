@@ -41,3 +41,6 @@ gradio_cached_examples/
 
 # Workspaces cibles (ne jamais tracker les projets sur lesquels l'agent travaille)
 workspaces/
+
+# Plan de travail interne (non versionné)
+PLAN_IMPLEMENTATION_GUI.md

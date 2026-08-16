@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src.core.git import (
     commit_all,
+    diff_size,
     ensure_gitignore,
     head_commit,
     init_repo,
@@ -248,6 +249,40 @@ def test_stage_and_commit_all_ignores_operational_files(tmp_path: Path):
     assert "DONE" not in tracked
     assert "OPENCODE_LOG.txt" not in tracked
     assert "PROGRESS.md.lock" not in tracked
+
+
+def test_diff_size_counts_added_and_removed_lines(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "a.txt").write_text("x\n")
+    (repo_dir / "b.txt").write_text("")
+    commit_all(repo_dir, "first")
+
+    (repo_dir / "a.txt").write_text("x\ny\nz\n")
+    (repo_dir / "b.txt").write_text("m\n")
+
+    size = diff_size(repo_dir, "HEAD")
+    assert size == {"added": 3, "removed": 0}
+
+
+def test_diff_size_counts_removals(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "f.txt").write_text("a\nb\nc\n")
+    commit_all(repo_dir, "first")
+
+    (repo_dir / "f.txt").write_text("a\n")
+
+    size = diff_size(repo_dir, "HEAD")
+    assert size == {"added": 0, "removed": 2}
+
+
+def test_diff_size_zero_without_base_commit(tmp_path: Path):
+    repo_dir = tmp_path / "repo"
+    _init_test_repo(repo_dir)
+    (repo_dir / "a.txt").write_text("x\n")
+
+    assert diff_size(repo_dir, "") == {"added": 0, "removed": 0}
 
 
 def test_operations_isolated_from_debuilder(tmp_path: Path):

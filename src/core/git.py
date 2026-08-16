@@ -168,6 +168,41 @@ def recent_changes(repo_dir: Path, commits: int = 5) -> str:
     return result.stdout.strip()
 
 
+def diff_size(repo_dir: Path, base: str = "HEAD") -> dict:
+    """Taille du diff (lignes ajoutees/retirees) depuis une reference.
+
+    Exploitee par le journal ITERATIONS.jsonl (cdc §5.2) : mesure le
+    travail produit par une iteration, y compris les commits poses par
+    l'agent pendant la session (``git diff <base>`` couvre tout ce qui
+    separe la reference de l'etat courant du working tree).
+
+    Args:
+        repo_dir: Chemin du depot Git cible.
+        base: Reference de depart (SHA ou ref) ; chaine vide si le
+            depot n'a pas encore de commit (compteurs a zero).
+
+    Returns:
+        Dictionnaire ``{"added": int, "removed": int}`` (lignes).
+    """
+    if not base:
+        return {"added": 0, "removed": 0}
+    result = _run(repo_dir, "diff", "--numstat", base)
+    if result.returncode != 0:
+        return {"added": 0, "removed": 0}
+    added = 0
+    removed = 0
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            added += int(parts[0]) if parts[0] != "-" else 0
+            removed += int(parts[1]) if parts[1] != "-" else 0
+        except ValueError:
+            continue
+    return {"added": added, "removed": removed}
+
+
 def rollback_last(repo_dir: Path) -> bool:
     """Annule le dernier commit (git reset --hard HEAD~1).
 

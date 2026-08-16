@@ -447,6 +447,134 @@ def test_run_iteration_writes_journal_entry(tmp_path, monkeypatch):
     assert "timestamp" in entries[0]
 
 
+# --- Observabilite du journal (phase 8, cdc §5.2) ------------------------------
+
+
+def test_run_iteration_journal_entry_conforms_to_schema(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+    from src.core.iterations import missing_entry_fields
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    monkeypatch.setenv("DEBUILDER_MODEL", "deepseek/test-model")
+
+    mock, calls = _dual_ok()
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+    monkeypatch.setattr(agent_mod, "stage_and_commit_all", lambda d, m: (True, ""))
+
+    run_iteration(target_dir, iteration_number=2)
+
+    entry = read_entries(target_dir)[0]
+    assert missing_entry_fields(entry) == []
+    assert entry["model"] == "deepseek/test-model"
+    assert [s["type"] for s in entry["sessions"]] == ["plan", "implement"]
+    assert all(s["model"] == "deepseek/test-model" for s in entry["sessions"])
+    assert all("duration_seconds" in s for s in entry["sessions"])
+    assert all(s["exit_code"] == 0 for s in entry["sessions"])
+    assert entry["diff"] == {"added": 0, "removed": 0}  # depot sans commit de base
+    assert calls["models"] == ["deepseek/test-model", "deepseek/test-model"]
+
+
+def test_run_iteration_journal_records_review_session(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    mock, _ = _make_session_mock(_plan_ok, _implement_claim_finished, _review_accept)
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+
+    run_iteration(target_dir, iteration_number=1)
+
+    entry = read_entries(target_dir)[0]
+    assert [s["type"] for s in entry["sessions"]] == ["plan", "implement", "review"]
+    assert entry["mission_completed"] is True
+
+
+def test_run_iteration_journal_diff_covers_agent_commits(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+    (target_dir / "initial.txt").write_text("v0\n")
+    _git(target_dir, "add", "-A")
+    _git(target_dir, "commit", "-m", "initial")
+
+    mock, _ = _dual_ok()
+    monkeypatch.setattr(agent_mod, "_run_opencode", mock)
+
+    run_iteration(target_dir, iteration_number=1)
+
+    entry = read_entries(target_dir)[0]
+    assert entry["diff"]["added"] > 0  # TASK.md/PROGRESS.md/PLAN.md produits
+
+
+def test_repeated_failures_notify_webhook(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    monkeypatch.setenv("DEBUILDER_MAX_CONSECUTIVE_FAILURES", "2")
+    webhook_calls = []
+    monkeypatch.setattr(
+        agent_mod, "_notify_webhook", lambda payload: webhook_calls.append(payload)
+    )
+
+    def _plan_fails(target_dir, prompt, model=None, read_only=False):
+        return subprocess.CompletedProcess(
+            args=["opencode"], returncode=0, stdout="aucun contrat ici", stderr=""
+        )
+
+    failing_mock, _ = _make_dual_mock(_plan_fails, _implement_ok)
+    monkeypatch.setattr(agent_mod, "_run_opencode", failing_mock)
+
+    run_iteration(target_dir, iteration_number=1)
+    assert webhook_calls == []
+
+    run_iteration(target_dir, iteration_number=2)
+
+    assert webhook_calls[-1]["event"] == "repeated_failures"
+    assert webhook_calls[-1]["failures"] == 2
+
+
+def test_repeated_failures_reset_after_success(tmp_path, monkeypatch):
+    import src.loop.agent as agent_mod
+
+    target_dir = tmp_path / "project"
+    init_project_state(target_dir, instructions="Test")
+    _init_git_repo(target_dir)
+
+    monkeypatch.setenv("DEBUILDER_MAX_CONSECUTIVE_FAILURES", "2")
+    webhook_calls = []
+    monkeypatch.setattr(
+        agent_mod, "_notify_webhook", lambda payload: webhook_calls.append(payload)
+    )
+
+    def _plan_fails(target_dir, prompt, model=None, read_only=False):
+        return subprocess.CompletedProcess(
+            args=["opencode"], returncode=0, stdout="aucun contrat ici", stderr=""
+        )
+
+    failing_mock, _ = _make_dual_mock(_plan_fails, _implement_ok)
+    monkeypatch.setattr(agent_mod, "_run_opencode", failing_mock)
+    run_iteration(target_dir, iteration_number=1)
+    webhook_calls.clear()
+
+    ok_mock, _ = _dual_ok()
+    monkeypatch.setattr(agent_mod, "_run_opencode", ok_mock)
+    run_iteration(target_dir, iteration_number=2)
+
+    failing_mock, _ = _make_dual_mock(_plan_fails, _implement_ok)
+    monkeypatch.setattr(agent_mod, "_run_opencode", failing_mock)
+    run_iteration(target_dir, iteration_number=3)
+
+    assert webhook_calls == []
+
+
 def test_run_iteration_classifies_timeout(tmp_path, monkeypatch):
     import src.loop.agent as agent_mod
 

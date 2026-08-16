@@ -9,9 +9,10 @@ renvoient le contenu brut des fichiers pour les onglets dedies
 
 from pathlib import Path
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from src.core.circuit_breaker import load_breaker_state
+from src.core.iterations import read_entries
 from src.core.log_summarizer import summarize_logs
 from src.core.state import read_state
 from src.utils.markdown_parser import parse_alerts, parse_benchmarks, parse_progress
@@ -20,6 +21,11 @@ from src.utils.text import read_log_tail
 router = APIRouter()
 
 _MAX_DASHBOARD_ALERTS = 2
+
+# Bornes de lecture du journal d'iterations : le tableau de bord ne
+# charge jamais plus de lignes que necessaire au graphe et aux stats.
+_DEFAULT_ITERATIONS_LIMIT = 100
+_MAX_ITERATIONS_LIMIT = 1000
 
 _NO_SESSION_DASHBOARD = {
     "activity_text": "*Aucune session active.*",
@@ -37,6 +43,31 @@ def get_dashboard(target_dir: str = Query(...)) -> dict:
     if not target_dir.strip():
         return _NO_SESSION_DASHBOARD
     return _get_dashboard_data(Path(target_dir))
+
+
+@router.get("/api/iterations")
+def get_iterations(
+    target_dir: str = Query(...),
+    limit: int = Query(default=_DEFAULT_ITERATIONS_LIMIT, ge=1, le=_MAX_ITERATIONS_LIMIT),
+) -> dict:
+    """Lignes du journal ITERATIONS.jsonl (cdc §5.2), les plus recentes.
+
+    Une ligne par iteration : horodatage, sessions (type, modele,
+    duree, code de sortie), taille du diff, tests parses, flag no-op,
+    tags. Les lignes corrompues sont ignorees a la lecture.
+
+    Args:
+        target_dir: Repertoire du projet cible.
+        limit: Nombre maximum de lignes retournees (les plus recentes).
+
+    Returns:
+        ``{"entries": [...], "total": n}`` ou ``total`` est le nombre
+        total de lignes valides du journal (non borne).
+    """
+    if not target_dir.strip():
+        raise HTTPException(400, "Aucune session active.")
+    entries = read_entries(Path(target_dir))
+    return {"entries": entries[-limit:], "total": len(entries)}
 
 
 @router.get("/api/progress")

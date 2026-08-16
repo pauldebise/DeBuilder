@@ -396,3 +396,51 @@ form textarea {
 .muted {
   color: var(--text-muted);
 }
+
+/* Iterations tab (ITERATIONS.jsonl chart) */
+
+.iterations-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.25rem 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.iterations-chart {
+  width: 100%;
+  height: 220px;
+  display: block;
+}
+
+.iterations-legend {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.25rem;
+  margin-bottom: 0.75rem;
+  color: var(--text-muted);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.swatch-ok {
+  background: #4f8cff;
+}
+
+.swatch-fail {
+  background: #e5484d;
+}
+
+.swatch-noop {
+  background: #f5a623;
+}
