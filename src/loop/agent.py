@@ -1231,6 +1231,11 @@ def _build_plan_prompt(
 
     parts.append(
         "## Instructions\n\n"
+        "Tu es en LECTURE SEULE : les outils bash, edit et write sont "
+        "desactives. Explore le projet uniquement avec les outils de "
+        "lecture (read, glob, grep, list) et, pour les informations "
+        "externes, websearch et webfetch. N'essaie pas d'executer de "
+        "commandes shell : elles seront refusees.\n"
         "1. Analyse l'etat actuel du projet : progression recente, plan, "
         "couverture du cahier des charges, etat des gates de l'iteration "
         "precedente.\n"
